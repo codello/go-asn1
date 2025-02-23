@@ -86,10 +86,12 @@ import (
 var val *MyType // see example above
 
 func main() {
-	var data []byte // decode from a byte slice
+	// decode from a byte slice
+	var data []byte
 	err := ber.Unmarshal(data, &val)
 
-	var r io.Reader // decode from an io.Reader
+	// decode from an io.Reader
+	var r io.Reader
 	err = ber.NewDecoder(r).Decode(&val)
 
 	// encode to a byte slice
