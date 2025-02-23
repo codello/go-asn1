@@ -1,0 +1,17 @@
+name: Linting
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+    tags: [ "*" ]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Run Linting
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: codello/.github/.github/workflows/go-lint.yml@v1

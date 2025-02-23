@@ -1,5 +1,7 @@
 # ASN.1 Data Structures in Go
 
+![Test Status](https://github.com/codello/go-asn1/actions/workflows/test.yml/badge.svg)
+
 This package provides base types for implementing ASN.1 data structures as defined to [Rec. ITU-T X.680] in Go.
 The goal of this package is not to provide a comprehensive implementation of all ASN.1 features
 but to provide a framework for modeling, encoding, and decoding ASN.1 data structures in Go.
