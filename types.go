@@ -98,7 +98,7 @@ func (s BitString) String() string {
 //region [UNIVERSAL 5] NULL
 
 // Null represents the ASN.1 NULL type. If your data structure contains fixed
-// NULL elements this type offers a convenient way to indicate their presence.
+// NULL fields this type offers a convenient way to indicate their presence.
 // If your data structure contains fields that may or may not be null, it is
 // probably better to use a nullable type such as a pointer.
 //
@@ -269,7 +269,7 @@ func (t Time) String() string {
 // The SEQUENCE type is implemented by custom struct types and slices/arrays.
 //endregion
 
-//region [UNIVERSAL 17] SET
+//region [UNIVERSAL 17] SET OF
 
 // Set represents the ASN.1 SET OF type. This is only a very basic
 // implementation of a set in Go. If you have specific requirements working with
@@ -278,7 +278,7 @@ func (t Time) String() string {
 // See also section 27 and 28 of Rec. ITU-T X.680.
 type Set[T comparable] map[T]struct{}
 
-// NewSet creates a new set with the specified elements.
+// NewSet creates a new set with the specified values.
 func NewSet[T comparable](ts ...T) Set[T] {
 	s := make(Set[T], len(ts))
 	for _, v := range ts {

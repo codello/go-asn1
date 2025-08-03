@@ -17,18 +17,19 @@ import (
 // FieldParameters is the parsed representation of tag string from a struct
 // field.
 type FieldParameters struct {
-	Ignore   bool      // true iff this field should be ignored
-	Tag      *asn1.Tag // the EXPLICIT or IMPLICIT class and tag number (maybe nil).
-	Optional bool      // true iff the field is OPTIONAL
-	Explicit bool      // true iff an EXPLICIT tag is in use.
-	OmitZero bool      // true iff this should be omitted if zero when marshaling.
-	Nullable bool      // true iff this can encode to and decode from null.
+	Ignore   bool     // true iff this field should be ignored
+	Tag      asn1.Tag // the EXPLICIT or IMPLICIT class and tag number (maybe nil).
+	Optional bool     // true iff the field is OPTIONAL
+	Explicit bool     // true iff an EXPLICIT tag is in use.
+	OmitZero bool     // true iff this should be omitted if zero when marshaling.
+	Nullable bool     // true iff this can encode to and decode from null.
 }
 
 // ParseFieldParameters will parse a given tag string into a FieldParameters
 // structure, ignoring unknown parts of the string. The string must be formatted
 // according to the package documentation of the asn1 package.
 func ParseFieldParameters(str string) (ret FieldParameters) {
+	hasClass := false
 	for part := range strings.SplitSeq(str, ",") {
 		switch {
 		case part == "-":
@@ -40,26 +41,21 @@ func ParseFieldParameters(str string) (ret FieldParameters) {
 		case strings.HasPrefix(part, "tag:"):
 			i, err := strconv.ParseUint(part[4:], 10, bits.UintSize)
 			if err == nil {
-				if ret.Tag == nil {
-					ret.Tag = &asn1.Tag{Class: asn1.ClassContextSpecific}
+				if !hasClass {
+					ret.Tag = asn1.ClassContextSpecific
 				}
-				ret.Tag.Number = uint(i)
+				// TODO: Check overflow?
+				ret.Tag = ret.Tag.Class() | asn1.Tag(i)
 			}
 		case part == "application":
-			if ret.Tag == nil {
-				ret.Tag = new(asn1.Tag)
-			}
-			ret.Tag.Class = asn1.ClassApplication
+			ret.Tag = ret.Tag&^(0b11<<14) | asn1.ClassApplication
+			hasClass = true
 		case part == "private":
-			if ret.Tag == nil {
-				ret.Tag = new(asn1.Tag)
-			}
-			ret.Tag.Class = asn1.ClassPrivate
+			ret.Tag = ret.Tag&^(0b11<<14) | asn1.ClassPrivate
+			hasClass = true
 		case part == "universal":
-			if ret.Tag == nil {
-				ret.Tag = new(asn1.Tag)
-			}
-			ret.Tag.Class = asn1.ClassUniversal
+			ret.Tag = ret.Tag&^(0b11<<14) | asn1.ClassUniversal
+			hasClass = true
 		case part == "omitzero":
 			ret.OmitZero = true
 		case part == "nullable":
@@ -86,7 +82,7 @@ func StructFields(v reflect.Value) iter.Seq2[reflect.Value, FieldParameters] {
 			if params.Ignore || !field.IsExported() {
 				continue
 			}
-			if field.Anonymous && params.Tag == nil && field.Type.Kind() == reflect.Struct && field.Type != ExtensibleType {
+			if field.Anonymous && params.Tag == 0 && field.Type.Kind() == reflect.Struct && field.Type != ExtensibleType {
 				for vv, params := range StructFields(v.Field(i)) {
 					if !yield(vv, params) {
 						return

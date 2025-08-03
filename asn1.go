@@ -63,7 +63,7 @@
 //	}
 //
 // The Go type MyType defines the contents of the ASN.1 SEQUENCE. The order in
-// which the struct fields are defined, corresponds to the order of elements
+// which the struct fields are defined, corresponds to the order of data values
 // within the SEQUENCE. Struct members must use exported (upper case) names.
 // Unexported members are ignored. Fields of anonymous struct members are
 // treated as if they were fields of the surrounding struct. Exported members
@@ -74,10 +74,10 @@
 //	tag:x       specifies the ASN.1 tag number; implies ASN.1 CONTEXT SPECIFIC
 //	application specifies that an APPLICATION tag is used
 //	private     specifies that a PRIVATE tag is used
-//	explicit    mark the element as explicit
+//	explicit    mark the field as explicit
 //	optional    marks the field as ASN.1 OPTIONAL
 //	omitzero    omit this field if it is a zero value
-//	nullable    allows ASN.1 NULL for this element
+//	nullable    allows ASN.1 NULL for this data value
 //
 // Using the struct tag `asn1:"tag:x"` (where x is a non-negative integer)
 // overrides the intrinsic type of the member type. This corresponds to IMPLICIT
@@ -86,14 +86,14 @@
 // "private" tag. The "universal" tag is supported for completeness but its use
 // should be avoided as it can easily lead to invalid encodings.
 //
-// ASN.1 allows an element to be marked as EXPLICIT. The effect of the
+// ASN.1 allows a subtype to be marked as EXPLICIT. The effect of the
 // `asn1:"explicit"` tag depends on the encoding rules used. When using
 // "explicit" you must also use "tag:x". Nested EXPLICIT tags cannot be
 // indicated via struct tags.
 //
-// ASN.1 OPTIONAL elements can be marked with an `asn1:"optional"` tag. If an
-// optional value is absent during decoding, no error is generated and the field
-// is left unmodified. Optionality during encoding is controlled via the
+// ASN.1 OPTIONAL types can be marked with an `asn1:"optional"` tag. If a value
+// for an optional type is absent during decoding, no error is generated and the
+// field is left unmodified. Optionality during encoding is controlled via the
 // `asn1:"omitzero"` tag. If "omitzero" is present and the value for a field is
 // the zero value, the field will be omitted during encoding. If a type
 // implements IsZero() bool, that method is consulted, otherwise the zero value
@@ -108,15 +108,19 @@
 //
 // Structs can make use of the [Extensible] type to be marked as extensible.
 // This corresponds to the ASN.1 extension marker. See the documentation on
-// [Extensible] for details. Currently, there is no counterpart for ASN.1
-// EXTENSIBILITY IMPLIED.
+// [Extensible] for details.
+//
+// # Limitations
+//
+// Currently the ASN.1 CHOICE type is not explicitly supported. Support can be
+// added by implementing custom encoding and decoding strategies for types
+// containing CHOICE components.
 //
 // [Rec. ITU-T X.680]: https://www.itu.int/rec/T-REC-X.680
 package asn1
 
 import (
 	"strconv"
-	"strings"
 )
 
 // Extensible marks a struct as extensible. It corresponds to the ASN.1
@@ -124,91 +128,114 @@ import (
 // as an anonymous field. An extensible struct can be decoded from a
 // representation that contains additional fields. For details see section 52 of
 // Rec. ITU-T X.680. If a struct embeds the Extensible type, it must be the last
-// non-ignored ASN.1 field, i.e. the following members must be either unexported
+// non-ignored ASN.1 field i.e., the following members must be either unexported
 // or use the `asn1:"-"` struct tag.
 type Extensible struct{}
 
-// Tag constitutes an ASN.1 tag, consisting of its class and number. For
+// Tag constitutes an ASN.1 tag, consisting of its class and number. The class
+// is indicated by the two most significant bits of the underlying integer. For
 // details, see Section 8 of Rec. ITU-T X.680.
-type Tag struct {
-	Class  Class
-	Number uint
-}
+//
+// Tag values can be constructed using bitwise operations:
+//
+//	TagMyType := asn1.ClassApplication | 15
+//
+// The default (zero) class is [asn1.ClassUniversal].
+//
+// Note that the encoding of the class and tag is different from the identifier
+// bits in the BER encoding.
+type Tag uint16
 
 // Class holds the class part of an ASN.1 tag. The class acts as a namespace for
-// the tag number. A Class value is an unsigned 2-bit integer. Class values
-// whose value exceeds 2 bits are invalid.
-//
-//go:generate stringer -type=Class -trimprefix=Class
-type Class uint8
+// the tag number. A Class value is an unsigned 2-bit integer. The relevant bits
+// are the two most significant bits of the underlying integer. Class is an
+// alias for Tag to make operations involving classes more convenient.
+type Class = Tag
 
-// IsValid reports whether c is a valid Class value.
-func (c Class) IsValid() bool {
-	return c <= 3
-}
+// classMask is the bitmask to extract the Class component from a Tag value.
+const classMask = Tag(0b11 << 14)
 
 // Predefined [Class] constants. These are all the possible values that can be
 // encoded in the [Class] type.
 const (
-	ClassUniversal Class = iota
+	ClassUniversal Class = iota << 14
 	ClassApplication
 	ClassContextSpecific
 	ClassPrivate
 )
 
-// String returns a string representation t in a format similar to the one used
-// in ASN.1 notation. The tag number is enclosed by square brackets and prefixed
-// with the class used. To avoid ambiguity the UNIVERSAL word is used for
-// universal tags, although this is not valid ASN.1 syntax.
-func (t Tag) String() string {
-	if t.Class == ClassContextSpecific {
-		return "[" + strconv.FormatUint(uint64(t.Number), 10) + "]"
-	}
-	return "[" + strings.ToUpper(t.Class.String()) + " " + strconv.FormatUint(uint64(t.Number), 10) + "]"
+// Class returns the class bits of t. The class bits are the two most
+// significant bits of the return value.
+func (t Tag) Class() Class {
+	return t & classMask
 }
 
-// TagReserved is a reserved tag number in the [ClassUniversal] namespace to be
-// used by encoding rules. This assignment is defined in Rec. ITU-T X.680,
-// Section 8, Table 1.
-const TagReserved = 0
+// Number returns the tag number of t as an uint. The tag number does not
+// include the class of the tag.
+func (t Tag) Number() uint {
+	return uint(t &^ classMask)
+}
 
-// These are some ASN.1 tag numbers are defined in the [ClassUniversal]
-// namespace. These assignments are defined in Rec. ITU-T X.680, Section 8, Table
-// 1.
+// String returns a string representation t in a format similar to the one used
+// in ASN.1 notation. The tag number is enclosed by square brackets and prefixed
+// with the class used. To avoid ambiguity, the UNIVERSAL word is used for
+// universal tags, although this is not valid ASN.1 syntax.
+func (t Tag) String() string {
+	n := strconv.FormatUint(uint64(t.Number()), 10)
+	switch t.Class() {
+	case ClassUniversal:
+		return "[UNIVERSAL " + n + "]"
+	case ClassApplication:
+		return "[APPLICATION " + n + "]"
+	case ClassContextSpecific:
+		return "[" + n + "]"
+	case ClassPrivate:
+		return "[PRIVATE " + n + "]"
+	}
+	panic("unreachable")
+}
+
+// TagReserved is the reserved tag number in the [ClassUniversal] namespace to
+// be used by encoding rules. This assignment is defined in Rec. ITU-T X.680,
+// Section 8, Table 1.
+const TagReserved Tag = ClassUniversal | 0
+
+// These are some ASN.1 tags defined in the [ClassUniversal] namespace. These
+// assignments are defined in Rec. ITU-T X.680, Section 8, Table 1.
 const (
-	TagBoolean          uint = 1
-	TagInteger          uint = 2
-	TagBitString        uint = 3
-	TagOctetString      uint = 4
-	TagNull             uint = 5
-	TagOID              uint = 6
-	TagObjectDescriptor uint = 7
-	TagExternal         uint = 8
-	TagReal             uint = 9
-	TagEnumerated       uint = 10
-	TagEmbeddedPDV      uint = 11
-	TagUTF8String       uint = 12
-	TagRelativeOID      uint = 13
-	TagTime             uint = 14
-	TagSequence         uint = 16
-	TagSet              uint = 17
-	TagNumericString    uint = 18
-	TagPrintableString  uint = 19
-	TagTeletexString    uint = 20
-	TagT61String             = TagTeletexString
-	TagVideotexString   uint = 21
-	TagIA5String        uint = 22
-	TagUTCTime          uint = 23
-	TagGeneralizedTime  uint = 24
-	TagGraphicString    uint = 25
-	TagVisibleString    uint = 26
-	TagISO646String          = TagVisibleString
-	TagGeneralString    uint = 27
-	TagUniversalString  uint = 28
-	TagCharacterString  uint = 29
-	TagBMPString        uint = 30
-	TagDate             uint = 31
-	TagTimeOfDay        uint = 32
-	TagDateTime         uint = 33
-	TagDuration         uint = 34
+	TagBoolean          = ClassUniversal | 1
+	TagInteger          = ClassUniversal | 2
+	TagBitString        = ClassUniversal | 3
+	TagOctetString      = ClassUniversal | 4
+	TagNull             = ClassUniversal | 5
+	TagOID              = ClassUniversal | 6
+	TagObjectDescriptor = ClassUniversal | 7
+	TagExternal         = ClassUniversal | 8
+	TagReal             = ClassUniversal | 9
+	TagEnumerated       = ClassUniversal | 10
+	TagEmbeddedPDV      = ClassUniversal | 11
+	TagUTF8String       = ClassUniversal | 12
+	TagRelativeOID      = ClassUniversal | 13
+	TagTime             = ClassUniversal | 14
+	TagSequence         = ClassUniversal | 16
+	TagSet              = ClassUniversal | 17
+	TagNumericString    = ClassUniversal | 18
+	TagPrintableString  = ClassUniversal | 19
+	TagTeletexString    = ClassUniversal | 20
+	TagT61String        = TagTeletexString
+	TagVideotexString   = ClassUniversal | 21
+	TagIA5String        = ClassUniversal | 22
+	TagUTCTime          = ClassUniversal | 23
+	TagGeneralizedTime  = ClassUniversal | 24
+	TagGraphicString    = ClassUniversal | 25
+	TagVisibleString    = ClassUniversal | 26
+	TagISO646String     = TagVisibleString
+	TagGeneralString    = ClassUniversal | 27
+	TagUniversalString  = ClassUniversal | 28
+	TagCharacterString  = ClassUniversal | 29
+	TagBMPString        = ClassUniversal | 30
+	TagDate             = ClassUniversal | 31
+	TagTimeOfDay        = ClassUniversal | 32
+	TagDateTime         = ClassUniversal | 33
+	TagDuration         = ClassUniversal | 34
 )

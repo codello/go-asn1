@@ -16,22 +16,22 @@ import (
 	"codello.dev/asn1"
 )
 
-func TestElementReader_Next(t *testing.T) {
+func TestReader_Next(t *testing.T) {
 	tests := map[string]struct {
 		data    []byte
 		want    []Header
 		wantErr error
 	}{
-		"SingleElement":                 {[]byte{0x02, 0x01, 0x15}, []Header{{asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagInteger}, 1, false}}, io.EOF},
-		"ChildExceedsParent":            {[]byte{0x30, 0x03, 0x02, 0x02, 0x15}, []Header{{asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagSequence}, 3, true}}, io.EOF},
-		"IndefiniteLength":              {[]byte{0x30, 0x80, 0x02, 0x01, 0x15, 0x00, 0x00}, []Header{{asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagSequence}, LengthIndefinite, true}}, io.EOF},
-		"UnexpectedEOF":                 {[]byte{0x30, 0x03, 0x02, 0x00}, []Header{{asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagSequence}, 3, true}}, io.ErrUnexpectedEOF},
-		"UnexpectedEOFIndefiniteLength": {[]byte{0x30, 0x80, 0x30, 0x00, 0x00}, []Header{{asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagSequence}, LengthIndefinite, true}}, io.ErrUnexpectedEOF},
+		"SingleValue":                   {[]byte{0x02, 0x01, 0x15}, []Header{{asn1.TagInteger, 1, false}}, io.EOF},
+		"ChildExceedsParent":            {[]byte{0x30, 0x03, 0x02, 0x02, 0x15}, []Header{{asn1.TagSequence, 3, true}}, io.EOF},
+		"IndefiniteLength":              {[]byte{0x30, 0x80, 0x02, 0x01, 0x15, 0x00, 0x00}, []Header{{asn1.TagSequence, LengthIndefinite, true}}, io.EOF},
+		"UnexpectedEOF":                 {[]byte{0x30, 0x03, 0x02, 0x00}, []Header{{asn1.TagSequence, 3, true}}, io.ErrUnexpectedEOF},
+		"UnexpectedEOFIndefiniteLength": {[]byte{0x30, 0x80, 0x30, 0x00, 0x00}, []Header{{asn1.TagSequence, LengthIndefinite, true}}, io.ErrUnexpectedEOF},
 		"UnexpectedEndOfContents":       {[]byte{0x00, 0x00}, []Header{}, &SyntaxError{}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			er := &elementReader{H: Header{Constructed: true}, R: &limitReader{bytes.NewReader(tt.data), LengthIndefinite}}
+			er := &reader{H: Header{Constructed: true}, R: &limitReader{bytes.NewReader(tt.data), LengthIndefinite}}
 			h, _, err := er.Next()
 			got := make([]Header, 0)
 			for err == nil {
@@ -49,19 +49,19 @@ func TestElementReader_Next(t *testing.T) {
 	}
 }
 
-func TestElementReader_Close(t *testing.T) {
+func TestReader_Close(t *testing.T) {
 	tests := map[string]struct {
 		data    []byte
 		want    []Header
 		wantErr error
 	}{
-		"SingleElement":      {[]byte{0x02, 0x01, 0x15}, []Header{{asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagInteger}, 1, false}}, io.EOF},
-		"ChildExceedsParent": {[]byte{0x30, 0x03, 0x02, 0x02, 0x15}, []Header{{asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagSequence}, 3, true}}, new(SyntaxError)},
-		"InvalidChild":       {[]byte{0x30, 0x05, 0x02, 0x80, 0x15, 0x00, 0x00}, []Header{{asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagSequence}, 5, true}}, new(SyntaxError)},
+		"SingleValue":        {[]byte{0x02, 0x01, 0x15}, []Header{{asn1.TagInteger, 1, false}}, io.EOF},
+		"ChildExceedsParent": {[]byte{0x30, 0x03, 0x02, 0x02, 0x15}, []Header{{asn1.TagSequence, 3, true}}, new(SyntaxError)},
+		"InvalidChild":       {[]byte{0x30, 0x05, 0x02, 0x80, 0x15, 0x00, 0x00}, []Header{{asn1.TagSequence, 5, true}}, new(SyntaxError)},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			er := &elementReader{H: Header{Constructed: true}, R: &limitReader{bytes.NewReader(tt.data), LengthIndefinite}}
+			er := &reader{H: Header{Constructed: true}, R: &limitReader{bytes.NewReader(tt.data), LengthIndefinite}}
 			h, _, err := er.Next()
 			got := make([]Header, 0)
 			for err == nil {
@@ -135,7 +135,7 @@ func TestUnmarshal_Any(t *testing.T) {
 		"OID":             {[]byte{0x06, 0x05, 0x28, 0xC2, 0x7B, 0x02, 0x01}, asn1.ObjectIdentifier{1, 0, 8571, 2, 1}},
 		"TagOctetString":  {[]byte{0x04, 0x08, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef}, []byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef}},
 		"Null":            {[]byte{0x05, 0x81, 0x00}, nil},
-		"RawValue":        {[]byte{0x48, 0x04, 0x01, 0x02, 0x03, 0x04}, RawValue{asn1.Tag{Class: asn1.ClassApplication, Number: 8}, false, []byte{0x01, 0x02, 0x03, 0x04}}},
+		"RawValue":        {[]byte{0x48, 0x04, 0x01, 0x02, 0x03, 0x04}, RawValue{asn1.ClassApplication | 8, false, []byte{0x01, 0x02, 0x03, 0x04}}},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {

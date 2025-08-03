@@ -21,19 +21,20 @@ import (
 // custom logic to encode themselves as an ASN.1 type using Basic Encoding
 // Rules.
 //
-// Encoding using BER is a two-step process: First the size of values is
-// estimated and then elements are written to a byte stream. The BerEncode
-// method realizes this by returning an io.WriterTo instead of writing data
-// directly to a writer. Implementations write exactly the amount of bytes
-// promised by h.Length. The writer passed to wt implements [io.ByteWriter].
+// Encoding using BER is a two-step process: First the size of data values is
+// estimated and then data value encoding bytes are written to a byte stream.
+// The BerEncode method realizes this by returning an io.WriterTo instead of
+// writing data directly to a writer. Implementations write exactly the amount
+// of bytes promised by h.Length. The writer passed to wt implements
+// [io.ByteWriter].
 //
 // Implementations should return any validation errors from BerEncode. Errors
 // returned from wt are assumed to be writing errors of the underlying writer.
 //
-// If an element uses the indefinite-length format, the final two zero octets
-// are written automatically and must not be written by wt. Custom constructed
-// elements may want to use the [Sequence] type to facilitate their encoding.
-// Note that struct tags override the class and tag of the returned header.
+// If a data value encoding uses the indefinite-length format, the final two
+// zero octets are written automatically and must not be written by wt. Custom
+// constructed encodings may want to use the [Sequence] type. Note that struct
+// tags override the class and tag of the returned header.
 type BerEncoder interface {
 	BerEncode() (h Header, wt io.WriterTo, err error)
 }
@@ -98,13 +99,13 @@ func (e *EncodeError) Unwrap() error {
 
 //region type Sequence
 
-// Sequence is a type that simplifies the encoding of constructed BER elements.
+// Sequence is a type that simplifies the generation of constructed encodings.
 // The zero value constitutes an empty sequence. If you want to implement a
 // custom, constructed [BerEncoder] you can use a Sequence like this:
 //
 //	func (*myType) BerEncode() (asn1.Header, io.WriterTo, error) {
 //		s := &Sequence{
-//			Tag: asn1.Tag{asn1.ClassApplication, 15}
+//			Tag: asn1.ClassApplication | 15
 //		}
 //		s.Append("A String")
 //		s.Append(42)
@@ -121,9 +122,10 @@ type Sequence struct {
 	params   []internal.FieldParameters
 }
 
-// SequenceOf returns a sequence containing the elements of the passed struct,
-// slice, or array. If val is not a struct, slice, or array, or any if the
-// values contained within val cannot be encoded, an error is returned.
+// SequenceOf returns a sequence containing the data values representing the
+// fields of the passed struct, slice, or array. If val is not a struct, slice,
+// or array, or any if the values contained within val cannot be encoded, an
+// error is returned.
 func SequenceOf(val any) (s *Sequence, err error) {
 	if val == nil {
 		return nil, &UnsupportedTypeError{Type: nil}
@@ -158,7 +160,7 @@ func SequenceOf(val any) (s *Sequence, err error) {
 	return s, nil
 }
 
-// Append adds an element at the end of the sequence. If the type of val does
+// Append adds a data value to the end of the sequence. If the type of val does
 // not permit encoding to BER an error of type [UnsupportedTypeError] is
 // returned. In particular if the type of val is supported, no error will be
 // returned. Validation is deferred to the BerEncode method.
@@ -172,7 +174,7 @@ func (s *Sequence) Append(val ...any) error {
 	return nil
 }
 
-// AppendWithParams adds an element at the end of the sequence. The format of
+// AppendWithParams adds a data value to the end of the sequence. The format of
 // params is the same as for struct tags documented in the documentation of this
 // package. If the type of val does not permit encoding to BER an error of type
 // [UnsupportedTypeError] is returned. In particular if the type of val is
@@ -182,7 +184,7 @@ func (s *Sequence) AppendWithParams(val any, params string) error {
 	return s.append(reflect.ValueOf(val), internal.ParseFieldParameters(params))
 }
 
-// append adds an element at the end of the sequence. The element is converted
+// append adds a data value to the end of the sequence. The value is converted
 // into a [BerDecoder]. If the conversion fails, an [UnsupportedTypeError] is
 // returned. In particular if the type of v is supported, no error will be
 // returned. Validation is deferred to the BerEncode method.
@@ -202,23 +204,23 @@ func (s *Sequence) append(v reflect.Value, params internal.FieldParameters) erro
 // BerEncode encodes the sequence into the BER format. The length of the
 // returned header is calculated as follows:
 //
-//   - If any of the sequence elements use the indefinite length format, the
+//   - If any of the sequence values use the indefinite length format, the
 //     resulting length is also indefinite.
-//   - If the sum of the lengths of the elements of s overflows the int type, the
+//   - If the sum of the lengths of the encodings of s overflows the int type, the
 //     resulting length is indefinite.
-//   - Otherwise the length is the sum of the lengths of the elements of s.
+//   - Otherwise the length is the sum of the lengths of the encodings of s.
 //
-// If encoding of any element fails, the error is returned by this method.
+// If encoding of any data value fails, the error is returned by this method.
 func (s *Sequence) BerEncode() (Header, io.WriterTo, error) {
 	h := Header{s.Tag, 0, true}
-	if h.Tag == (asn1.Tag{}) {
-		h.Tag = asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagSequence}
+	if h.Tag == 0 {
+		h.Tag = asn1.TagSequence
 	}
 
 	headers := make([]Header, len(s.encoders))
 	writers := make([]io.WriterTo, len(s.encoders))
 	for i, enc := range s.encoders {
-		eh, wt, err := encodeElement(s.values[i], enc, s.params[i])
+		eh, wt, err := encodeValue(s.values[i], enc, s.params[i])
 		if err != nil {
 			return Header{}, nil, err
 		}
@@ -229,7 +231,7 @@ func (s *Sequence) BerEncode() (Header, io.WriterTo, error) {
 	return h, writerFunc(func(w io.Writer) (n int64, err error) {
 		var n2 int64
 		for i := 0; i < len(headers) && err == nil; i++ {
-			n2, err = writeElement(s.values[i], w, headers[i], writers[i])
+			n2, err = writeValue(s.values[i], w, headers[i], writers[i])
 			n += n2
 		}
 		return n, err
@@ -240,21 +242,20 @@ func (s *Sequence) BerEncode() (Header, io.WriterTo, error) {
 
 //region type explicitEncoder
 
-// explicitEncoder wraps a [BerEncoder] in another constructed element. The tag
-// of the element is set via explicit struct tags thus an explicitEncoder has no
-// intrinsic tag.
+// explicitEncoder wraps a [BerEncoder] in another constructed encoding. The tag
+// is set via explicit struct tags thus an explicitEncoder has no intrinsic tag.
 type explicitEncoder codec[BerEncoder]
 
-// BerEncode wraps the underlying encoder of e in a new, constructed element.
-// The tag of the element will be set by an explicit struct tag.
+// BerEncode wraps the underlying encoder of e in a new, constructed encoding.
+// The tag will be set by an explicit struct tag.
 func (e explicitEncoder) BerEncode() (Header, io.WriterTo, error) {
-	h, wt, err := encodeElement(e.ref, e.val, internal.FieldParameters{})
+	h, wt, err := encodeValue(e.ref, e.val, internal.FieldParameters{})
 	if err != nil {
 		return Header{}, nil, err
 	}
 	ret := Header{Length: CombinedLength(h.numBytes(), h.Length), Constructed: true} // class and tag are set explicitly
 	return ret, writerFunc(func(w io.Writer) (int64, error) {
-		return writeElement(e.ref, w, h, wt)
+		return writeValue(e.ref, w, h, wt)
 	}), nil
 }
 
@@ -298,7 +299,7 @@ func makeEncoder(v reflect.Value, params internal.FieldParameters) (ret BerEncod
 		// In this case we pretend the value was set to nil and continue.
 		if v.Kind() == reflect.Pointer && v.Elem().Kind() == reflect.Interface && v.Elem().Elem() == v {
 			v = v.Elem()
-			return nil, &UnsupportedTypeError{Type: v.Type(), msg: "cannot encode self-referential element"}
+			return nil, &UnsupportedTypeError{Type: v.Type(), msg: "cannot encode self-referential value"}
 		}
 		v = v.Elem()
 	}
@@ -353,14 +354,14 @@ func makeEncoder(v reflect.Value, params internal.FieldParameters) (ret BerEncod
 	}
 }
 
-// encodeElement begins encoding enc. This is the first step of the 2-step
-// encoding process. The second step is implemented by writeElement.
+// encodeValue begins encoding enc. This is the first step of the 2-step
+// encoding process. The second step is implemented by writeValue.
 //
 // The header generated by enc may be replaced by a tag specified by params. If
 // encoding fails, an [EncodeError] will be returned.
 //
 // The v argument is only used for error reporting.
-func encodeElement(v reflect.Value, enc BerEncoder, params internal.FieldParameters) (Header, io.WriterTo, error) {
+func encodeValue(v reflect.Value, enc BerEncoder, params internal.FieldParameters) (Header, io.WriterTo, error) {
 	h, wt, err := enc.BerEncode()
 	if err != nil {
 		if errors.As(err, new(*EncodeError)) {
@@ -369,20 +370,20 @@ func encodeElement(v reflect.Value, enc BerEncoder, params internal.FieldParamet
 		return h, wt, &EncodeError{v, err}
 	}
 	if h.Length == LengthIndefinite && !h.Constructed {
-		return h, nil, &EncodeError{v, errors.New("primitive, indefinite length element")}
+		return h, nil, &EncodeError{v, errors.New("primitive, indefinite length encoding")}
 	}
-	if params.Tag != nil {
-		h.Tag = *params.Tag
+	if params.Tag != 0 {
+		h.Tag = params.Tag
 	}
-	if h.Tag == (asn1.Tag{}) {
+	if h.Tag == 0 {
 		return h, wt, &EncodeError{v, errors.New("missing class or tag")}
 	}
 	return h, wt, nil
 }
 
-// writeElement writes the element identified by h and wt to w. This is the
-// second step of the 2-step encoding process. The first step is implemented by
-// encodeElement.
+// writeValue writes the encoding of h and the content octets identified by wt
+// to w. This is the second step of the 2-step encoding process. The first step
+// is implemented by encodeValue.
 //
 // Any error generated by writing wt to w is returned as-is. If wt does not
 // behave as defined by the [BerEncoder] interface, an [EncodeError] is
@@ -390,15 +391,15 @@ func encodeElement(v reflect.Value, enc BerEncoder, params internal.FieldParamet
 // error will wrap io.ErrShortWrite.
 //
 // The v argument is only used for error reporting.
-func writeElement(v reflect.Value, w io.Writer, h Header, wt io.WriterTo) (n int64, err error) {
+func writeValue(v reflect.Value, w io.Writer, h Header, wt io.WriterTo) (n int64, err error) {
 	if h.Length == LengthIndefinite && !h.Constructed {
-		panic("primitive, indefinite length element")
+		panic("primitive, indefinite length encoding")
 	}
 	n, err = h.writeTo(w.(io.ByteWriter))
 	if err != nil {
 		return n, err
 	}
-	ew := &elementWriter{w, h.Length, 0}
+	ew := &limitWriter{w, h.Length, 0}
 	if wt != nil {
 		n2, err := wt.WriteTo(ew)
 		n += n2
@@ -414,20 +415,20 @@ func writeElement(v reflect.Value, w io.Writer, h Header, wt io.WriterTo) (n int
 		n2, err = w.Write([]byte{0x00, 0x00})
 		n += int64(n2)
 	} else if ew.Len() != 0 {
-		err = &EncodeError{v, errors.New("element did not write all its bytes")}
+		err = &EncodeError{v, errors.New("BerEncode did not write all its bytes")}
 	}
 	return n, err
 }
 
-// elementWriter wraps an [io.Writer] and adds two control mechanisms:
+// limitWriter wraps an [io.Writer] and adds two control mechanisms:
 //
-//   - elementWriter can limit the number of bytes written to the underlying
+//   - limitWriter can limit the number of bytes written to the underlying
 //     writer.
-//   - elementWriter counts the number of bytes written by the underlying
+//   - limitWriter counts the number of bytes written by the underlying
 //     writer.
 //
 // Setting N to [LengthIndefinite] disables the write limiter.
-type elementWriter struct {
+type limitWriter struct {
 	W io.Writer
 	N int   // remaining bytes
 	C int64 // bytes written
@@ -435,11 +436,11 @@ type elementWriter struct {
 
 // Len returns the number of bytes remaining in w. Writing more than Len() bytes
 // will result in an error.
-func (w *elementWriter) Len() int {
+func (w *limitWriter) Len() int {
 	return w.N
 }
 
-func (w *elementWriter) Write(p []byte) (n int, err error) {
+func (w *limitWriter) Write(p []byte) (n int, err error) {
 	if w.N != LengthIndefinite && len(p) > w.N {
 		p = p[:w.N]
 		err = errors.New("write exceeds length")
@@ -453,7 +454,7 @@ func (w *elementWriter) Write(p []byte) (n int, err error) {
 	return n, err
 }
 
-func (w *elementWriter) WriteByte(b byte) (err error) {
+func (w *limitWriter) WriteByte(b byte) (err error) {
 	if w.N != LengthIndefinite && w.Len() <= 0 {
 		return errors.New("write exceeds length")
 	}
@@ -490,8 +491,8 @@ type Encoder struct {
 // NewEncoder creates a new [Encoder]. Writing BER data requires single-byte
 // writes. If w implements [io.ByteWriter] it is assumed to be efficient enough
 // so no additional buffering is done. If w does not implement [io.ByteWriter],
-// writes to w will be buffered. The buffer will be flushed after writing an
-// element in [Encoder.Encode] or [Encoder.EncodeWithParams].
+// writes to w will be buffered. The buffer will be flushed after writing data
+// in [Encoder.Encode] or [Encoder.EncodeWithParams].
 func NewEncoder(w io.Writer) *Encoder {
 	if _, ok := w.(io.Writer); ok {
 		return &Encoder{w, nil}
@@ -521,11 +522,11 @@ func (e *Encoder) EncodeWithParams(val any, params string) (err error) {
 	if enc == nil {
 		return nil
 	}
-	h, wt, err := encodeElement(v, enc, fp)
+	h, wt, err := encodeValue(v, enc, fp)
 	if err != nil {
 		return err
 	}
-	_, err = writeElement(v, e.w, h, wt)
+	_, err = writeValue(v, e.w, h, wt)
 	if e.buf == nil {
 		return err
 	}
@@ -555,7 +556,7 @@ func MarshalWithParams(val any, params string) ([]byte, error) {
 	if enc == nil {
 		return nil, nil
 	}
-	h, wt, err := encodeElement(v, enc, fp)
+	h, wt, err := encodeValue(v, enc, fp)
 	if err != nil {
 		return nil, err
 	}
@@ -563,6 +564,6 @@ func MarshalWithParams(val any, params string) ([]byte, error) {
 	if h.Length != LengthIndefinite {
 		buf.Grow(h.Length)
 	}
-	_, err = writeElement(v, &buf, h, wt)
+	_, err = writeValue(v, &buf, h, wt)
 	return buf.Bytes(), err
 }

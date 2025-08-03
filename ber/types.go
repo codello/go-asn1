@@ -49,7 +49,7 @@ type codec[T any] struct {
 // The codec is selected mainly based on the type of vif. If vif is nil or an
 // unknown type the codec is selected based on the provided tag or the
 // underlying type of v.
-func codecFor(v reflect.Value, vif any, tag *asn1.Tag) berCodec {
+func codecFor(v reflect.Value, vif any, tag asn1.Tag) berCodec {
 	switch vv := vif.(type) {
 	case asn1.BitString:
 		return bitStringCodec{v, vv}
@@ -103,21 +103,19 @@ func codecFor(v reflect.Value, vif any, tag *asn1.Tag) berCodec {
 	case asn1.GeneralizedTime:
 		return generalizedTimeCodec{v, vv}
 	case time.Time:
-		if tag != nil && tag.Class == asn1.ClassUniversal {
-			switch tag.Number {
-			case asn1.TagTime:
-				return timeCodec{v, asn1.Time(vv)}
-			case asn1.TagUTCTime:
-				return utcTimeCodec{v, asn1.UTCTime(vv)}
-			case asn1.TagGeneralizedTime:
-				return generalizedTimeCodec{v, asn1.GeneralizedTime(vv)}
-			case asn1.TagDate:
-				return dateCodec{v, asn1.Date(vv)}
-			case asn1.TagTimeOfDay:
-				return timeOfDayCodec{v, asn1.TimeOfDay(vv)}
-			case asn1.TagDateTime:
-				return dateTimeCodec{v, asn1.DateTime(vv)}
-			}
+		switch tag {
+		case asn1.TagTime:
+			return timeCodec{v, asn1.Time(vv)}
+		case asn1.TagUTCTime:
+			return utcTimeCodec{v, asn1.UTCTime(vv)}
+		case asn1.TagGeneralizedTime:
+			return generalizedTimeCodec{v, asn1.GeneralizedTime(vv)}
+		case asn1.TagDate:
+			return dateCodec{v, asn1.Date(vv)}
+		case asn1.TagTimeOfDay:
+			return timeOfDayCodec{v, asn1.TimeOfDay(vv)}
+		case asn1.TagDateTime:
+			return dateTimeCodec{v, asn1.DateTime(vv)}
 		}
 		return timeCodec{v, asn1.Time(vv)}
 	case asn1.UniversalString:
@@ -153,10 +151,7 @@ func codecFor(v reflect.Value, vif any, tag *asn1.Tag) berCodec {
 	case reflect.Float32, reflect.Float64:
 		return floatCodec{v, v.Float()}
 	case reflect.String:
-		if tag == nil || tag.Class != asn1.ClassUniversal {
-			tag = &asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagUTF8String}
-		}
-		switch tag.Number {
+		switch tag {
 		case asn1.TagUTF8String,
 			asn1.TagNumericString,
 			asn1.TagPrintableString,
@@ -165,16 +160,13 @@ func codecFor(v reflect.Value, vif any, tag *asn1.Tag) berCodec {
 			asn1.TagUniversalString,
 			asn1.TagBMPString:
 		default:
-			tag = &asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagUTF8String}
+			tag = asn1.TagUTF8String
 		}
 		s = v.String()
 		fallthrough
 	case reflect.Interface:
 		// This case is only reached when decoding
-		if tag.Class != asn1.ClassUniversal {
-			return rawValueCodec{ref: v}
-		}
-		switch tag.Number {
+		switch tag {
 		case asn1.TagBoolean:
 			return boolCodec{ref: v}
 		case asn1.TagInteger:
@@ -270,17 +262,17 @@ func (c boolCodec) BerEncode() (h Header, w io.WriterTo, err error) {
 		bs = []byte{0x00}
 	}
 	return Header{
-			Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagBoolean},
+			Tag:         asn1.TagBoolean,
 			Length:      1,
 			Constructed: false},
 		bytes.NewReader(bs), nil
 }
 
 func (c boolCodec) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagBoolean}
+	return tag == asn1.TagBoolean
 }
 
-func (c boolCodec) BerDecode(tag asn1.Tag, r ElementReader) error {
+func (c boolCodec) BerDecode(tag asn1.Tag, r Reader) error {
 	if r.Len() != 1 {
 		return &SyntaxError{tag, errors.New("invalid boolean")}
 	}
@@ -352,7 +344,7 @@ func (c intCodec) BerEncode() (h Header, w io.WriterTo, err error) {
 		tag = asn1.TagEnumerated
 	}
 	return Header{
-			Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: tag},
+			Tag:         tag,
 			Length:      l,
 			Constructed: false},
 		bytes.NewReader(bs[9-l:]), nil
@@ -363,12 +355,12 @@ func (c intCodec) BerMatch(tag asn1.Tag) bool {
 		if bm, ok := c.val.(BerMatcher); ok {
 			return bm.BerMatch(tag)
 		}
-		return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagEnumerated}
+		return tag == asn1.TagEnumerated
 	}
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagInteger}
+	return tag == asn1.TagInteger
 }
 
-func (c intCodec) BerDecode(tag asn1.Tag, r ElementReader) error {
+func (c intCodec) BerDecode(tag asn1.Tag, r Reader) error {
 	if r.Len() == 0 {
 		return &SyntaxError{tag, errors.New("empty integer")}
 	}
@@ -445,7 +437,7 @@ var bigOne = big.NewInt(1)
 type bigIntCodec codec[big.Int]
 
 func (c bigIntCodec) BerEncode() (h Header, wt io.WriterTo, err error) {
-	h.Tag = asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagInteger}
+	h.Tag = asn1.TagInteger
 	if c.val.Sign() == 0 {
 		h.Length = 1
 		// Zero is written as a single 0 zero rather than no bytes.
@@ -507,10 +499,10 @@ func (c bigIntCodec) BerEncode() (h Header, wt io.WriterTo, err error) {
 }
 
 func (c bigIntCodec) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagInteger}
+	return tag == asn1.TagInteger
 }
 
-func (c bigIntCodec) BerDecode(tag asn1.Tag, r ElementReader) error {
+func (c bigIntCodec) BerDecode(tag asn1.Tag, r Reader) error {
 	if r.Len() == 0 {
 		return &SyntaxError{tag, errors.New("empty integer")}
 	}
@@ -555,7 +547,7 @@ func (c bitStringCodec) BerEncode() (Header, io.WriterTo, error) {
 		return Header{}, nil, errors.New("BitString is not valid")
 	}
 	h := Header{
-		Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagBitString},
+		Tag:         asn1.TagBitString,
 		Length:      (c.val.BitLength+8-1)/8 + 1,
 		Constructed: false,
 	}
@@ -581,16 +573,16 @@ func (c bitStringCodec) BerEncode() (Header, io.WriterTo, error) {
 }
 
 func (bitStringCodec) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagBitString}
+	return tag == asn1.TagBitString
 }
 
-func (c bitStringCodec) BerDecode(tag asn1.Tag, r ElementReader) error {
+func (c bitStringCodec) BerDecode(tag asn1.Tag, r Reader) error {
 	sr := NewStringReader(tag, r)
 	var buf bytes.Buffer
 	if r.Len() != LengthIndefinite {
 		buf.Grow(r.Len())
 	}
-	var er ElementReader
+	var er Reader
 	var err error
 	padding := byte(0)
 	for er, err = range sr.Strings() {
@@ -643,7 +635,7 @@ func (c binaryMarshalerCodec) BerEncode() (Header, io.WriterTo, error) {
 		return Header{}, nil, fmt.Errorf("marshal binary: %w", err)
 	}
 	return Header{
-		Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagOctetString},
+		Tag:         asn1.TagOctetString,
 		Length:      len(buf),
 		Constructed: false,
 	}, bytes.NewReader(buf), nil
@@ -651,14 +643,14 @@ func (c binaryMarshalerCodec) BerEncode() (Header, io.WriterTo, error) {
 
 // binaryUnmarshalerCodec implements decoding of an ASN.1 OCTET STRING into
 // arbitrary Go values that implement [encoding.BinaryUnmarshaler]. The entire
-// element is buffered into memory before the unmarshaler is invoked.
+// data value encoding is buffered into memory before the unmarshaler is invoked.
 type binaryUnmarshalerCodec codec[encoding.BinaryUnmarshaler]
 
 func (binaryUnmarshalerCodec) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagOctetString}
+	return tag == asn1.TagOctetString
 }
 
-func (c binaryUnmarshalerCodec) BerDecode(tag asn1.Tag, r ElementReader) error {
+func (c binaryUnmarshalerCodec) BerDecode(tag asn1.Tag, r Reader) error {
 	sr := NewStringReader(tag, r)
 	buf, err := sr.Bytes()
 	if err != nil {
@@ -675,14 +667,14 @@ type bytesCodec codec[any]
 func (c bytesCodec) BerEncode() (Header, io.WriterTo, error) {
 	if c.ref.Kind() == reflect.Slice || c.ref.CanAddr() {
 		return Header{
-			Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagOctetString},
+			Tag:         asn1.TagOctetString,
 			Length:      c.ref.Len(),
 			Constructed: false,
 		}, bytes.NewReader(c.ref.Bytes()), nil
 	}
 	// unaddressable array
 	h := Header{
-		Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagOctetString},
+		Tag:         asn1.TagOctetString,
 		Length:      c.ref.Len(),
 		Constructed: false,
 	}
@@ -700,10 +692,10 @@ func (c bytesCodec) BerEncode() (Header, io.WriterTo, error) {
 }
 
 func (bytesCodec) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagOctetString}
+	return tag == asn1.TagOctetString
 }
 
-func (c bytesCodec) BerDecode(tag asn1.Tag, r ElementReader) error {
+func (c bytesCodec) BerDecode(tag asn1.Tag, r Reader) error {
 	s := NewStringReader(tag, r)
 	bs, err := s.Bytes()
 	if err != nil {
@@ -739,17 +731,17 @@ type nullCodec codec[asn1.Null]
 
 func (c nullCodec) BerEncode() (Header, io.WriterTo, error) {
 	return Header{
-		Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagNull},
+		Tag:         asn1.TagNull,
 		Length:      0,
 		Constructed: false,
 	}, nil, nil
 }
 
 func (c nullCodec) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagNull}
+	return tag == asn1.TagNull
 }
 
-func (c nullCodec) BerDecode(tag asn1.Tag, r ElementReader) error {
+func (c nullCodec) BerDecode(tag asn1.Tag, r Reader) error {
 	if r.Constructed() || r.Len() > 0 {
 		return &SyntaxError{tag, errors.New("invalid NULL value")}
 	}
@@ -777,7 +769,7 @@ func (c oidCodec) BerEncode() (Header, io.WriterTo, error) {
 		return Header{}, nil, err
 	}
 	h2 := Header{
-		Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagOID},
+		Tag:         asn1.TagOID,
 		Length:      l + h.Length,
 		Constructed: false,
 	}
@@ -794,10 +786,10 @@ func (c oidCodec) BerEncode() (Header, io.WriterTo, error) {
 }
 
 func (oidCodec) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagOID}
+	return tag == asn1.TagOID
 }
 
-func (c oidCodec) BerDecode(tag asn1.Tag, r ElementReader) error {
+func (c oidCodec) BerDecode(tag asn1.Tag, r Reader) error {
 	if r.Len() == 0 {
 		return &SyntaxError{tag, errors.New("zero length OBJECT IDENTIFIER")}
 	}
@@ -811,7 +803,7 @@ func (c oidCodec) BerDecode(tag asn1.Tag, r ElementReader) error {
 		return err
 	}
 
-	// In the worst case, we get two elements from the first byte (which is
+	// In the worst case, we get two values from the first byte (which is
 	// encoded differently) and then every varint is a single byte long.
 	s := make(asn1.ObjectIdentifier, r.Len()+2)
 	if v < 80 {
@@ -837,7 +829,7 @@ type floatCodec codec[float64]
 
 func (c floatCodec) BerEncode() (Header, io.WriterTo, error) {
 	h := Header{
-		Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagReal},
+		Tag:         asn1.TagReal,
 		Constructed: false,
 	}
 	if c.val == 0 && !math.Signbit(c.val) {
@@ -902,10 +894,10 @@ func (c floatCodec) BerEncode() (Header, io.WriterTo, error) {
 }
 
 func (c floatCodec) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagReal}
+	return tag == asn1.TagReal
 }
 
-func (c floatCodec) BerDecode(tag asn1.Tag, r ElementReader) (err error) {
+func (c floatCodec) BerDecode(tag asn1.Tag, r Reader) (err error) {
 	var b byte
 	var ret float64
 	if r.Len() == 0 {
@@ -949,7 +941,7 @@ done:
 
 // parseBinary parses a float from the REAL representation. b is the first byte
 // of the representation, r contains the remaining bytes.
-func (c floatCodec) parseBinary(tag asn1.Tag, b byte, r ElementReader) (ret float64, err error) {
+func (c floatCodec) parseBinary(tag asn1.Tag, b byte, r Reader) (ret float64, err error) {
 	s, e, err := parseRealExp(tag, b, r)
 	if err != nil {
 		return 0, err
@@ -1005,7 +997,7 @@ func (c floatCodec) parseBinary(tag asn1.Tag, b byte, r ElementReader) (ret floa
 // encoding.
 //
 // See Section 8.5 of Rec. ITU-T X.690, in particular Section 8.5.7.
-func parseRealExp(tag asn1.Tag, b byte, r ElementReader) (s byte, e int64, err error) {
+func parseRealExp(tag asn1.Tag, b byte, r Reader) (s byte, e int64, err error) {
 	s = (b & 0x40) >> 6     // bit 7 of b
 	base := (b & 0x30) >> 4 // bit 6 and 5 of b
 	// we keep the binary code of the base for simpler computations later on
@@ -1049,7 +1041,7 @@ func parseRealExp(tag asn1.Tag, b byte, r ElementReader) (s byte, e int64, err e
 // parseDecimal parses a float64 value from the decimal representation of a REAL
 // value. b contains the first byte of the representation, r the remaining
 // bytes.
-func (c floatCodec) parseDecimal(tag asn1.Tag, b byte, r ElementReader) (float64, error) {
+func (c floatCodec) parseDecimal(tag asn1.Tag, b byte, r Reader) (float64, error) {
 	bs := make([]byte, r.Len())
 	_, err := io.ReadFull(r, bs)
 	if err != nil {
@@ -1144,7 +1136,7 @@ type bigFloatCodec codec[big.Float]
 
 func (c bigFloatCodec) BerEncode() (Header, io.WriterTo, error) {
 	h := Header{
-		Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagReal},
+		Tag:         asn1.TagReal,
 		Constructed: false,
 	}
 	zero := new(big.Float)
@@ -1226,10 +1218,10 @@ func (c bigFloatCodec) BerEncode() (Header, io.WriterTo, error) {
 }
 
 func (c bigFloatCodec) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagReal}
+	return tag == asn1.TagReal
 }
 
-func (c bigFloatCodec) BerDecode(tag asn1.Tag, r ElementReader) (err error) {
+func (c bigFloatCodec) BerDecode(tag asn1.Tag, r Reader) (err error) {
 	var b byte
 	var ret *big.Float
 	if r.Len() == 0 {
@@ -1266,7 +1258,7 @@ func (c bigFloatCodec) BerDecode(tag asn1.Tag, r ElementReader) (err error) {
 }
 
 // parseBinary parses a REAL in binary representation into a big.Float.
-func (c bigFloatCodec) parseBinary(tag asn1.Tag, b byte, r ElementReader) (*big.Float, error) {
+func (c bigFloatCodec) parseBinary(tag asn1.Tag, b byte, r Reader) (*big.Float, error) {
 	s, e, err := parseRealExp(tag, b, r)
 	if err != nil {
 		return nil, err
@@ -1291,7 +1283,7 @@ func (c bigFloatCodec) parseBinary(tag asn1.Tag, b byte, r ElementReader) (*big.
 }
 
 // parseDecimal parses a REAL in decimal representation into a big.Float.
-func (c bigFloatCodec) parseDecimal(tag asn1.Tag, b byte, r ElementReader) (*big.Float, error) {
+func (c bigFloatCodec) parseDecimal(tag asn1.Tag, b byte, r Reader) (*big.Float, error) {
 	bs := make([]byte, r.Len())
 	_, err := io.ReadFull(r, bs)
 	if err != nil {
@@ -1332,7 +1324,7 @@ type stringCodec[T interface {
 	~string
 	IsValid() bool
 }] struct {
-	tag uint
+	tag asn1.Tag
 	codec[T]
 }
 
@@ -1341,17 +1333,17 @@ func (c stringCodec[T]) BerEncode() (h Header, w io.WriterTo, err error) {
 		err = errors.New(c.ref.Type().String() + " contains invalid characters")
 	}
 	return Header{
-		Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: c.tag},
+		Tag:         c.tag,
 		Length:      len(c.val),
 		Constructed: false,
 	}, strings.NewReader(string(c.val)), err
 }
 
 func (c stringCodec[T]) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: c.tag}
+	return tag == c.tag
 }
 
-func (c stringCodec[T]) BerDecode(tag asn1.Tag, r ElementReader) error {
+func (c stringCodec[T]) BerDecode(tag asn1.Tag, r Reader) error {
 	rs := NewStringReader(tag, r)
 	var sb strings.Builder
 	var buf []byte
@@ -1395,7 +1387,7 @@ func (c relativeOIDCodec) BerEncode() (Header, io.WriterTo, error) {
 		l += base128IntLength(n)
 	}
 	h := Header{
-		Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagRelativeOID},
+		Tag:         asn1.TagRelativeOID,
 		Length:      l,
 		Constructed: false,
 	}
@@ -1411,12 +1403,12 @@ func (c relativeOIDCodec) BerEncode() (Header, io.WriterTo, error) {
 }
 
 func (relativeOIDCodec) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagRelativeOID}
+	return tag == asn1.TagRelativeOID
 }
 
-func (c relativeOIDCodec) BerDecode(tag asn1.Tag, r ElementReader) (err error) {
+func (c relativeOIDCodec) BerDecode(tag asn1.Tag, r Reader) (err error) {
 	if r.Constructed() {
-		return &SyntaxError{tag, errors.New("primitive element")}
+		return &SyntaxError{tag, errors.New("primitive encoding")}
 	}
 	var s []uint
 	if c.val != nil && len(c.val) >= r.Len() {
@@ -1431,7 +1423,7 @@ func (c relativeOIDCodec) BerDecode(tag asn1.Tag, r ElementReader) (err error) {
 }
 
 // decodeRelativeOID decodes OID components from r into buf. The buf must be
-// large enough to hold all OID element or this method panics. The number of
+// large enough to hold all OID components or this method panics. The number of
 // decoded OID components and any error encountered are returned.
 func decodeRelativeOID(r io.ByteReader, buf []uint) (i int, err error) {
 	var v uint
@@ -1463,7 +1455,7 @@ type timeCodec codec[asn1.Time]
 func (c timeCodec) BerEncode() (h Header, wt io.WriterTo, err error) {
 	format := c.val.String()
 	h = Header{
-		Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagTime},
+		Tag:         asn1.TagTime,
 		Length:      len(format),
 		Constructed: false,
 	}
@@ -1474,12 +1466,12 @@ func (c timeCodec) BerEncode() (h Header, wt io.WriterTo, err error) {
 }
 
 func (c timeCodec) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagTime}
+	return tag == asn1.TagTime
 }
 
-func (c timeCodec) BerDecode(tag asn1.Tag, r ElementReader) error {
+func (c timeCodec) BerDecode(tag asn1.Tag, r Reader) error {
 	if r.Constructed() {
-		return &SyntaxError{tag, errors.New("constructed element")}
+		return &SyntaxError{tag, errors.New("constructed encoding")}
 	}
 	bs := make([]byte, r.Len())
 	_, err := io.ReadFull(r, bs)
@@ -1629,7 +1621,7 @@ tz:
 type setCodec codec[any]
 
 func (c setCodec) BerEncode() (Header, io.WriterTo, error) {
-	seq := Sequence{Tag: asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagSet}}
+	seq := Sequence{Tag: asn1.TagSet}
 	for _, key := range c.ref.MapKeys() {
 		if err := seq.append(key, internal.FieldParameters{}); err != nil {
 			return Header{}, nil, err
@@ -1642,10 +1634,10 @@ func (c setCodec) BerMatch(tag asn1.Tag) bool {
 	if bm, ok := c.val.(BerMatcher); ok {
 		return bm.BerMatch(tag)
 	}
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagSet}
+	return tag == asn1.TagSet
 }
 
-func (c setCodec) BerDecode(_ asn1.Tag, r ElementReader) (err error) {
+func (c setCodec) BerDecode(_ asn1.Tag, r Reader) (err error) {
 	keyType := c.ref.Type().Key()
 	empty := reflect.ValueOf(struct{}{})
 	if c.ref.IsNil() {
@@ -1656,7 +1648,7 @@ func (c setCodec) BerDecode(_ asn1.Tag, r ElementReader) (err error) {
 	var (
 		params internal.FieldParameters
 		h      Header
-		er     ElementReader
+		er     Reader
 	)
 	for err == nil {
 		if h, er, err = r.Next(); err != nil {
@@ -1689,7 +1681,7 @@ func (c utcTimeCodec) BerEncode() (h Header, w io.WriterTo, err error) {
 	}
 	format := c.val.String()
 	h = Header{
-		Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagUTCTime},
+		Tag:         asn1.TagUTCTime,
 		Length:      len(format),
 		Constructed: false,
 	}
@@ -1700,10 +1692,10 @@ func (c utcTimeCodec) BerEncode() (h Header, w io.WriterTo, err error) {
 }
 
 func (utcTimeCodec) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagUTCTime}
+	return tag == asn1.TagUTCTime
 }
 
-func (c utcTimeCodec) BerDecode(tag asn1.Tag, r ElementReader) (err error) {
+func (c utcTimeCodec) BerDecode(tag asn1.Tag, r Reader) (err error) {
 	s, err := NewStringReader(tag, r).String()
 	if err != nil {
 		return err
@@ -1791,7 +1783,7 @@ func (c generalizedTimeCodec) BerEncode() (h Header, wt io.WriterTo, err error) 
 	}
 	format := c.val.String()
 	h = Header{
-		Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagGeneralizedTime},
+		Tag:         asn1.TagGeneralizedTime,
 		Length:      len(format),
 		Constructed: false,
 	}
@@ -1802,10 +1794,10 @@ func (c generalizedTimeCodec) BerEncode() (h Header, wt io.WriterTo, err error) 
 }
 
 func (c generalizedTimeCodec) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagGeneralizedTime}
+	return tag == asn1.TagGeneralizedTime
 }
 
-func (c generalizedTimeCodec) BerDecode(tag asn1.Tag, r ElementReader) error {
+func (c generalizedTimeCodec) BerDecode(tag asn1.Tag, r Reader) error {
 	s, err := NewStringReader(tag, r).String()
 	if err != nil {
 		return err
@@ -1888,7 +1880,7 @@ func (c universalStringCodec) BerEncode() (h Header, wt io.WriterTo, err error) 
 		err = errors.New("UniversalString contains invalid characters")
 	}
 	h = Header{
-		Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagUniversalString},
+		Tag:         asn1.TagUniversalString,
 		Length:      4 * utf8.RuneCountInString(string(c.val)),
 		Constructed: false,
 	}
@@ -1906,10 +1898,10 @@ func (c universalStringCodec) BerEncode() (h Header, wt io.WriterTo, err error) 
 }
 
 func (universalStringCodec) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagUniversalString}
+	return tag == asn1.TagUniversalString
 }
 
-func (c universalStringCodec) BerDecode(tag asn1.Tag, r ElementReader) (err error) {
+func (c universalStringCodec) BerDecode(tag asn1.Tag, r Reader) (err error) {
 	sr := NewStringReader(tag, r)
 	var sb strings.Builder
 	if r.Len() != LengthIndefinite {
@@ -1962,7 +1954,7 @@ func (c bmpStringCodec) BerEncode() (h Header, wt io.WriterTo, err error) {
 		err = errors.New("BMPString contains invalid characters")
 	}
 	h = Header{
-		Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagBMPString},
+		Tag:         asn1.TagBMPString,
 		Length:      2 * utf8.RuneCountInString(string(c.val)),
 		Constructed: false,
 	}
@@ -1980,10 +1972,10 @@ func (c bmpStringCodec) BerEncode() (h Header, wt io.WriterTo, err error) {
 }
 
 func (bmpStringCodec) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagBMPString}
+	return tag == asn1.TagBMPString
 }
 
-func (c bmpStringCodec) BerDecode(tag asn1.Tag, r ElementReader) (err error) {
+func (c bmpStringCodec) BerDecode(tag asn1.Tag, r Reader) (err error) {
 	sr := NewStringReader(tag, r)
 	var sb strings.Builder
 	if r.Len() != LengthIndefinite {
@@ -2026,7 +2018,7 @@ func (c dateCodec) BerEncode() (h Header, wt io.WriterTo, err error) {
 	}
 	format := c.val.String()
 	h = Header{
-		Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagDate},
+		Tag:         asn1.TagDate,
 		Length:      len(format),
 		Constructed: false,
 	}
@@ -2037,12 +2029,12 @@ func (c dateCodec) BerEncode() (h Header, wt io.WriterTo, err error) {
 }
 
 func (c dateCodec) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagDate}
+	return tag == asn1.TagDate
 }
 
-func (c dateCodec) BerDecode(tag asn1.Tag, r ElementReader) error {
+func (c dateCodec) BerDecode(tag asn1.Tag, r Reader) error {
 	if r.Constructed() {
-		return &SyntaxError{tag, errors.New("constructed element")}
+		return &SyntaxError{tag, errors.New("constructed encoding")}
 	}
 	bs := make([]byte, r.Len())
 	_, err := io.ReadFull(r, bs)
@@ -2086,7 +2078,7 @@ func (c timeOfDayCodec) BerEncode() (h Header, wt io.WriterTo, err error) {
 	}
 	format := c.val.String()
 	h = Header{
-		Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagTimeOfDay},
+		Tag:         asn1.TagTimeOfDay,
 		Length:      len(format),
 		Constructed: false,
 	}
@@ -2097,12 +2089,12 @@ func (c timeOfDayCodec) BerEncode() (h Header, wt io.WriterTo, err error) {
 }
 
 func (c timeOfDayCodec) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagTimeOfDay}
+	return tag == asn1.TagTimeOfDay
 }
 
-func (c timeOfDayCodec) BerDecode(tag asn1.Tag, r ElementReader) error {
+func (c timeOfDayCodec) BerDecode(tag asn1.Tag, r Reader) error {
 	if r.Constructed() {
-		return &SyntaxError{tag, errors.New("constructed element")}
+		return &SyntaxError{tag, errors.New("constructed encoding")}
 	}
 	bs := make([]byte, r.Len())
 	_, err := io.ReadFull(r, bs)
@@ -2147,7 +2139,7 @@ func (c dateTimeCodec) BerEncode() (h Header, wt io.WriterTo, err error) {
 	}
 	format := c.val.String()
 	h = Header{
-		Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagDateTime},
+		Tag:         asn1.TagDateTime,
 		Length:      len(format),
 		Constructed: false,
 	}
@@ -2158,12 +2150,12 @@ func (c dateTimeCodec) BerEncode() (h Header, wt io.WriterTo, err error) {
 }
 
 func (c dateTimeCodec) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagDateTime}
+	return tag == asn1.TagDateTime
 }
 
-func (c dateTimeCodec) BerDecode(tag asn1.Tag, r ElementReader) error {
+func (c dateTimeCodec) BerDecode(tag asn1.Tag, r Reader) error {
 	if r.Constructed() {
-		return &SyntaxError{tag, errors.New("constructed element")}
+		return &SyntaxError{tag, errors.New("constructed encoding")}
 	}
 	bs := make([]byte, r.Len())
 	_, err := io.ReadFull(r, bs)
@@ -2215,7 +2207,7 @@ type durationCodec codec[asn1.Duration]
 func (c durationCodec) BerEncode() (h Header, wt io.WriterTo, err error) {
 	format := c.val.String()
 	h = Header{
-		Tag:         asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagDuration},
+		Tag:         asn1.TagDuration,
 		Length:      len(format),
 		Constructed: false,
 	}
@@ -2226,12 +2218,12 @@ func (c durationCodec) BerEncode() (h Header, wt io.WriterTo, err error) {
 }
 
 func (c durationCodec) BerMatch(tag asn1.Tag) bool {
-	return tag == asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagDuration}
+	return tag == asn1.TagDuration
 }
 
-func (c durationCodec) BerDecode(tag asn1.Tag, r ElementReader) error {
+func (c durationCodec) BerDecode(tag asn1.Tag, r Reader) error {
 	if r.Constructed() {
-		return &SyntaxError{tag, errors.New("constructed element")}
+		return &SyntaxError{tag, errors.New("constructed encoding")}
 	}
 	bs := make([]byte, r.Len())
 	_, err := io.ReadFull(r, bs)
@@ -2321,7 +2313,7 @@ func (c durationCodec) BerDecode(tag asn1.Tag, r ElementReader) error {
 // not supported.
 type flagCodec codec[Flag]
 
-func (c flagCodec) BerDecode(_ asn1.Tag, _ ElementReader) error {
+func (c flagCodec) BerDecode(_ asn1.Tag, _ Reader) error {
 	c.ref.SetBool(true)
 	return nil
 }
@@ -2338,7 +2330,7 @@ func (flagCodec) BerEncode() (h Header, w io.WriterTo, err error) {
 // Matching of [RawValue] values can be restricted by setting the value before
 // decoding.
 //
-// During decoding the contents of constructed elements are validated
+// During decoding the contents of constructed encodings are validated
 // syntactically.
 type rawValueCodec codec[RawValue]
 
@@ -2347,10 +2339,10 @@ func (c rawValueCodec) BerEncode() (Header, io.WriterTo, error) {
 }
 
 func (c rawValueCodec) BerMatch(tag asn1.Tag) bool {
-	return c.val.Tag == asn1.Tag{} || tag == c.val.Tag
+	return c.val.Tag == 0 || tag == c.val.Tag
 }
 
-func (c rawValueCodec) BerDecode(tag asn1.Tag, r ElementReader) error {
+func (c rawValueCodec) BerDecode(tag asn1.Tag, r Reader) error {
 	rv := RawValue{
 		Tag:         tag,
 		Constructed: r.Constructed(),
@@ -2365,10 +2357,10 @@ func (c rawValueCodec) BerDecode(tag asn1.Tag, r ElementReader) error {
 	if r.Len() != LengthIndefinite {
 		buf.Grow(r.Len())
 	}
-	lr := r.(*elementReader).R
-	r.(*elementReader).R = &limitReader{io.TeeReader(lr, &buf), lr.N}
+	lr := r.(*reader).R
+	r.(*reader).R = &limitReader{io.TeeReader(lr, &buf), lr.N}
 
-	// Validate the syntax and read the element's bytes
+	// Validate the syntax and read the content octets
 	err := r.Close()
 	rv.Bytes = buf.Bytes()
 	c.ref.Set(reflect.ValueOf(rv))

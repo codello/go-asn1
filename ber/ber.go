@@ -11,18 +11,18 @@
 // into and decoded from a stream of binary data using the Basic Encoding Rules
 // using this package. The following limitations apply:
 //
-//   - When decoding an ASN.1 INTEGER type into a Go integer the size of the
+//   - When decoding an ASN.1 INTEGER type into a Go integer, the size of the
 //     integer is limited by the size of the Go type. This limitation does not apply
 //     to [*math/big.Int].
 //   - When decoding an ASN.1 REAL type into a Go float64 or float32, the size of
-//     the value is limited by the size of the Go type. When using [*math/big.Float]
+//     the value is limited by the size of the Go type. When using [*math/big.Float],
 //     the size limitations of that type apply.
-//   - When decoding binary data into a pre-allocated byte slice the data will
+//   - When decoding binary data into a pre-allocated byte slice, the data will
 //     overwrite existing data in the slice.
 //   - When decoding binary data into a byte array, the number of bytes in the
-//     element must match the length of the array exactly.
-//   - When decoding a constructed element into an array the number of sequence
-//     elements must match the length of the array exactly.
+//     data value must match the length of the array exactly.
+//   - When decoding a constructed encoding into an array, the number of data values
+//     in the sequence must match the length of the array exactly.
 //   - Decoding into an interface{} will decode known types as their corresponding
 //     Go values. Unrecognized types will be stored as [RawValue].
 //
@@ -37,13 +37,13 @@ import (
 )
 
 // A Flag accepts any data and is set to true if present. A flag cannot be
-// encoded into BER. In most cases a Flag should be used on an optional element.
+// encoded into BER. In most cases, a Flag should be used on an optional type.
 type Flag bool
 
-// A RawValue represents an un-decoded ASN.1 object. During decoding the syntax
-// of structured elements is validated so the Bytes are guaranteed to contain a
-// valid BER encoding. During encoding the bytes are written as-is without any
-// validation.
+// A RawValue represents an un-decoded data value. During decoding, the syntax of
+// structured encodings is validated so the Bytes are guaranteed to contain a
+// valid data value encoding. During encoding, the bytes are written as-is
+// without any validation.
 type RawValue struct {
 	Tag         asn1.Tag
 	Constructed bool

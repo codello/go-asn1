@@ -20,12 +20,12 @@ func TestHeader_encode(t *testing.T) {
 		Header
 		want []byte
 	}{
-		"EndOfContents":      {Header{asn1.Tag{}, 0, false}, []byte{0x00, 0x00}},
-		"UTF8String":         {Header{asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagUTF8String}, 5, false}, []byte{0x0C, 0x05}},
-		"LongTag":            {Header{asn1.Tag{Class: asn1.ClassContextSpecific, Number: 173}, 8, true}, []byte{0xBF, 0x81, 0x2D, 0x08}},
-		"Sequence":           {Header{asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagSequence}, 60, true}, []byte{0x30, 60}},
-		"LongSequence":       {Header{asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagSequence}, 746, true}, []byte{0x30, 0x80 | 0x02, 0x02, 0xEA}},
-		"IndefiniteSequence": {Header{asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagSequence}, LengthIndefinite, true}, []byte{0x30, 0x80}},
+		"EndOfContents":      {Header{asn1.TagReserved, 0, false}, []byte{0x00, 0x00}},
+		"UTF8String":         {Header{asn1.TagUTF8String, 5, false}, []byte{0x0C, 0x05}},
+		"LongTag":            {Header{asn1.ClassContextSpecific | 173, 8, true}, []byte{0xBF, 0x81, 0x2D, 0x08}},
+		"Sequence":           {Header{asn1.TagSequence, 60, true}, []byte{0x30, 60}},
+		"LongSequence":       {Header{asn1.TagSequence, 746, true}, []byte{0x30, 0x80 | 0x02, 0x02, 0xEA}},
+		"IndefiniteSequence": {Header{asn1.TagSequence, LengthIndefinite, true}, []byte{0x30, 0x80}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -56,12 +56,12 @@ func TestHeader_decode(t *testing.T) {
 		want       Header
 		wantErr    error
 	}{
-		"EndOfContents":      {[]byte{0x00, 0x00}, 0, Header{asn1.Tag{}, 0, false}, nil},
-		"UTF8String":         {[]byte{0x0C, 0x05, 0x00}, 1, Header{asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagUTF8String}, 5, false}, nil},
-		"LongTag":            {[]byte{0xBF, 0x81, 0x2D, 0x08, 0x00, 0x00}, 2, Header{asn1.Tag{Class: asn1.ClassContextSpecific, Number: 173}, 8, true}, nil},
-		"Sequence":           {[]byte{0x30, 60}, 0, Header{asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagSequence}, 60, true}, nil},
-		"LongSequence":       {[]byte{0x30, 0x80 | 0x02, 0x02, 0xEA}, 0, Header{asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagSequence}, 746, true}, nil},
-		"IndefiniteSequence": {[]byte{0x30, 0x80}, 0, Header{asn1.Tag{Class: asn1.ClassUniversal, Number: asn1.TagSequence}, LengthIndefinite, true}, nil},
+		"EndOfContents":      {[]byte{0x00, 0x00}, 0, Header{asn1.TagReserved, 0, false}, nil},
+		"UTF8String":         {[]byte{0x0C, 0x05, 0x00}, 1, Header{asn1.TagUTF8String, 5, false}, nil},
+		"LongTag":            {[]byte{0xBF, 0x81, 0x2D, 0x08, 0x00, 0x00}, 2, Header{asn1.ClassContextSpecific | 173, 8, true}, nil},
+		"Sequence":           {[]byte{0x30, 60}, 0, Header{asn1.TagSequence, 60, true}, nil},
+		"LongSequence":       {[]byte{0x30, 0x80 | 0x02, 0x02, 0xEA}, 0, Header{asn1.TagSequence, 746, true}, nil},
+		"IndefiniteSequence": {[]byte{0x30, 0x80}, 0, Header{asn1.TagSequence, LengthIndefinite, true}, nil},
 
 		"EOF":            {nil, 0, Header{}, io.EOF},
 		"ErrNoLength":    {[]byte{0x30}, 0, Header{}, io.ErrUnexpectedEOF},

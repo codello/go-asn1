@@ -14,13 +14,14 @@ import (
 )
 
 // LengthIndefinite when used as a magic number for the length of a [Header]
-// indicates that the element is encoded using the constructed indefinite-length
-// format.
+// indicates that the data value is encoded using the constructed
+// indefinite-length format.
 const LengthIndefinite = -1
 
-// CombinedLength returns the length of an element (not including its header)
-// consisting of child elements of the specified lengths. If any of the passed
-// lengths are [LengthIndefinite], the result is [LengthIndefinite] as well.
+// CombinedLength returns the length of a data value encoding (not including its
+// header) consisting of data value encodings of the specified lengths. If any
+// of the passed lengths are [LengthIndefinite], the result is
+// [LengthIndefinite] as well.
 func CombinedLength(ls ...int) int {
 	sum := 0
 	for _, l := range ls {
@@ -35,11 +36,11 @@ func CombinedLength(ls ...int) int {
 	return sum
 }
 
-// Header represents the BER header of an encoded element. The Length of an
-// element indicates the number of bytes that make up the contents of the
-// element. Length can also be the special value [LengthIndefinite] if the
-// element uses the constructed indefinite-length encoding. In that case
-// Constructed must also be set to true.
+// Header represents the BER header of an encoded data value. The Length of the
+// Header indicates the number of bytes that make up the content octets of the
+// encoded data value. Length can also be the special value [LengthIndefinite]
+// if the encoding uses the constructed indefinite-length encoding. In that
+// case, Constructed must also be set to true.
 type Header struct {
 	Tag         asn1.Tag
 	Length      int
@@ -50,9 +51,9 @@ type Header struct {
 // method will write this exact number of bytes.
 func (h Header) numBytes() int {
 	l := 1 // class, constructed, tag
-	if h.Tag.Number >= 31 {
+	if h.Tag.Number() >= 31 {
 		// tag does not fit
-		l += base128IntLength(h.Tag.Number)
+		l += base128IntLength(h.Tag.Number())
 	}
 	l++ // length
 	if h.Length == LengthIndefinite || h.Length < 128 {
@@ -69,12 +70,12 @@ func (h Header) numBytes() int {
 // writeTo writes the BER-encoding of h to w. It returns the number of bytes
 // written as well as any error that occurs during writing.
 func (h Header) writeTo(w io.ByteWriter) (n int64, err error) {
-	b := uint8(h.Tag.Class) << 6
+	b := uint8(h.Tag.Class() >> 8)
 	if h.Constructed {
 		b |= 0x20
 	}
-	if h.Tag.Number < 31 {
-		b |= uint8(h.Tag.Number)
+	if h.Tag.Number() < 31 {
+		b |= uint8(h.Tag.Number())
 		if err = w.WriteByte(b); err != nil {
 			return n, err
 		}
@@ -84,7 +85,7 @@ func (h Header) writeTo(w io.ByteWriter) (n int64, err error) {
 		if err = w.WriteByte(b); err != nil {
 			return n, err
 		}
-		n, err = writeBase128Int(w, h.Tag.Number)
+		n, err = writeBase128Int(w, h.Tag.Number())
 		n++
 		if err != nil {
 			return n, err
@@ -115,7 +116,7 @@ func (h Header) writeTo(w io.ByteWriter) (n int64, err error) {
 	return n, err
 }
 
-// decodeHeader reads the identifier and length octets of a BER-encoded element
+// decodeHeader reads the identifier and length octets of a data value encoding
 // from r and returns them as a [Header] value. If the encoding is invalid an
 // error is returned.
 //
@@ -128,17 +129,17 @@ func decodeHeader(r io.ByteReader) (h Header, err error) {
 		return Header{}, err
 	}
 	h = Header{
-		Tag: asn1.Tag{
-			Class:  asn1.Class(b >> 6),
-			Number: uint(b & 0x1f),
-		},
+		Tag:         asn1.Tag(b>>6)<<14 | asn1.Tag(b&0x1f),
 		Constructed: b&0x20 == 0x20,
 	}
 
 	// If the bottom five bits are set, then the tag number is actually base 128
 	// encoded afterward
-	if h.Tag.Number == 0x1f {
-		h.Tag.Number, err = decodeBase128(r)
+	if b&0x1f == 0x1f {
+		var n uint
+		n, err = decodeBase128(r)
+		// FIXME: Check overflow
+		h.Tag = h.Tag.Class() | (asn1.Tag(n) &^ (0b11 << 14))
 		if err != nil {
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF

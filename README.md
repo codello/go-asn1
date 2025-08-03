@@ -126,7 +126,7 @@ type MyString struct {
 }
 
 // BerEncode defines how s is encoded using BER. It returns identification
-// information of the element (its ber.Header) as well as an io.WriterTo.
+// information of the data value (its ber.Header) as well as an io.WriterTo.
 // The io.WriterTo value will do the actual encoding of the value into bytes.
 func (s *MyString) BerEncode() (ber.Header, io.WriterTo, error) {
 	return ber.Header{
@@ -135,18 +135,18 @@ func (s *MyString) BerEncode() (ber.Header, io.WriterTo, error) {
 	}, strings.NewReader(s.data), nil
 }
 
-// BerMatch is used to implement ASN.1 OPTIONAL elements. It is called before
-// BerDecode to find out, if an element with the specified tag could be decoded
-// by s. If BerMatch is not implemented, a value matches any tag.
+// BerMatch is used to implement ASN.1 OPTIONAL types. It is called before
+// BerDecode to find out, if a data value encoding is compatible with s. If
+// BerMatch is not implemented, any tag is a match.
 func (s *MyString) BerMatch(tag asn1.Tag) bool {
 	return tag == asn1.Tag{Class: asn1.ClassApplication, Number: 15}
 }
 
-// BerDecode decodes a data stream from r into s. The ber.ElementReader type
+// BerDecode decodes a data stream from r into s. The ber.Reader type
 // provides various methods to simplify reading primitive or constructed
 // types. For constructed types a common strategy is to wrap it in a
 // ber.Decoder to do recursive decoding.
-func (s *MyString) BerDecode(_ asn1.Tag, r ber.ElementReader) error {
+func (s *MyString) BerDecode(_ asn1.Tag, r ber.Reader) error {
 	// you
 	buf := strings.Builder{}
 	_, err := io.Copy(&buf, r)

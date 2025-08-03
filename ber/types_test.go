@@ -726,8 +726,8 @@ func TestFlag(t *testing.T) {
 
 func TestRawValue(t *testing.T) {
 	testCodec(t, map[string]testCase[*RawValue]{
-		"Primitive":   {val: &RawValue{asn1.Tag{Class: asn1.ClassApplication, Number: 6}, false, []byte{0x01, 0x02}}, data: []byte{0x46, 0x02, 0x01, 0x02}},
-		"Constructed": {val: &RawValue{asn1.Tag{Class: asn1.ClassApplication, Number: 6}, true, []byte{0x02, 0x01, 0x02}}, data: []byte{0x66, 0x03, 0x02, 0x01, 0x02}},
+		"Primitive":   {val: &RawValue{asn1.ClassApplication | 6, false, []byte{0x01, 0x02}}, data: []byte{0x46, 0x02, 0x01, 0x02}},
+		"Constructed": {val: &RawValue{asn1.ClassApplication | 6, true, []byte{0x02, 0x01, 0x02}}, data: []byte{0x66, 0x03, 0x02, 0x01, 0x02}},
 	}, nil, map[string]testCase[*RawValue]{
 		"InvalidConstructed": {data: []byte{0x66, 0x02, 0x01, 0x02}, wantErr: &SyntaxError{}},
 	})

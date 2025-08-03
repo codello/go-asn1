@@ -23,16 +23,17 @@ import (
 // A StringReader must be created via [NewStringReader].
 type StringReader struct {
 	t asn1.Tag
-	r ElementReader
+	r Reader
 
 	curr     *StringReader
-	currLeaf ElementReader
+	currLeaf Reader
 }
 
 // NewStringReader creates a new [StringReader] reading from r. r can be
-// constructed or primitive. If r is constructed, every child element must use
-// the class and tag identified by the specified tag.
-func NewStringReader(tag asn1.Tag, r ElementReader) *StringReader {
+// constructed or primitive. If r is using the constructed encoding, every
+// subsequent data value must use the class and tag identified by the specified
+// tag.
+func NewStringReader(tag asn1.Tag, r Reader) *StringReader {
 	return &StringReader{t: tag, r: r}
 }
 
@@ -42,10 +43,10 @@ func (r *StringReader) Constructed() bool {
 	return r.r.Constructed()
 }
 
-// next returns the next element in the string that uses the primitive encoding.
-// The returned reader may be empty. If no more elements follow, io.EOF is
-// returned.
-func (r *StringReader) next() (er ElementReader, err error) {
+// next returns the next data value encoding in r that uses the primitive
+// encoding. The returned reader may be empty. If no more data values follow,
+// io.EOF is returned.
+func (r *StringReader) next() (er Reader, err error) {
 	if !r.Constructed() {
 		if r.curr == nil {
 			r.curr = r
@@ -66,7 +67,7 @@ func (r *StringReader) next() (er ElementReader, err error) {
 				return er, err
 			}
 			if h.Tag != r.t {
-				return er, &SyntaxError{r.t, errors.New("non-matching inner element " + h.Tag.String() + " in constructed string")}
+				return er, &SyntaxError{r.t, errors.New("non-matching encoding " + h.Tag.String() + " in constructed string")}
 			}
 			if !er.Constructed() {
 				r.currLeaf = er
@@ -84,22 +85,22 @@ func (r *StringReader) next() (er ElementReader, err error) {
 			return nil, err
 		}
 		if h.Tag != r.t {
-			return er, &SyntaxError{r.t, errors.New("non-matching inner element " + h.Tag.String() + " in constructed string")}
+			return er, &SyntaxError{r.t, errors.New("non-matching encoding " + h.Tag.String() + " in constructed string")}
 		}
 	}
 	return r.currLeaf, nil
 }
 
-// Strings returns a sequence of string elements that use the primitive
-// encoding. The error will be nil for all elements of the sequence, except
-// potentially the last one. The sequence ends when io.EOF is encountered. Note
-// that there will be no sequence element with an io.EOF error.
+// Strings returns a sequence of Reader values for data value encodings that all
+// use the primitive encoding. There will be nor further items after an item
+// where the error is non-nil. The sequence ends when io.EOF is encountered.
+// Note that there will be no sequence item with an io.EOF error.
 //
 // If reading has already begun via Read or ReadByte, the sequence will only
-// contain elements that are completely unread. Any primitive element that has
-// been partially read is discarded.
-func (r *StringReader) Strings() iter.Seq2[ElementReader, error] {
-	return func(yield func(ElementReader, error) bool) {
+// contain data value encodings that are completely unread. Any primitive
+// encoding that has been partially read is discarded.
+func (r *StringReader) Strings() iter.Seq2[Reader, error] {
+	return func(yield func(Reader, error) bool) {
 		er, err := r.next()
 		for err == nil {
 			if !yield(er, nil) {
