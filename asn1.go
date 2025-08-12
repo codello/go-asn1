@@ -146,6 +146,9 @@ type Extensible struct{}
 // bits in the BER encoding.
 type Tag uint16
 
+// MaxTag is the maximum tag number supported by this package (for any class).
+const MaxTag = 0x3FFF
+
 // Class holds the class part of an ASN.1 tag. The class acts as a namespace for
 // the tag number. A Class value is an unsigned 2-bit integer. The relevant bits
 // are the two most significant bits of the underlying integer. Class is an
