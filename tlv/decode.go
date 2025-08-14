@@ -207,9 +207,9 @@ func (d *Decoder) ReadHeader() (Header, *Value, error) {
 
 	// adjust buffering
 	switch d.StackDepth() {
-	case 1: // we have just read the start of a top-level element
+	case 1: // we have just read the start of a top-level data value
 		d.buf.SetLimit(d.curr.Length)
-	case 0: // we have just read the end of a top-level element
+	case 0: // we have just read the end of a top-level data value
 		d.buf.SetLimit(0)
 	}
 	if d.curr.Constructed {
@@ -223,7 +223,7 @@ func (d *Decoder) ReadHeader() (Header, *Value, error) {
 // structure is detected, an error is returned.
 func (d *Decoder) readHeader() (Header, error) {
 	if !d.curr.Constructed {
-		// discard the (rest of the) primitive element
+		// discard the (rest of the) primitive data value
 		if err := d.discard(); err != nil {
 			return Header{}, err
 		}
@@ -252,10 +252,10 @@ func (d *Decoder) readHeader() (Header, error) {
 		// enc-of-contents is a reserved tag
 		err = errInvalidEOC
 	} else if !h.Constructed && h.Length == LengthIndefinite {
-		err = errors.New("indefinite-length primitive element")
+		err = errors.New("indefinite-length primitive data value")
 	} else if h.Length != LengthIndefinite && uint(h.Length) > uint(d.curr.Remaining()) {
 		// uint conversion takes care of indefinite length
-		err = errors.New("element exceeds parent")
+		err = errors.New("data value exceeds parent")
 	} else {
 		d.state.push(h)
 	}
@@ -335,8 +335,8 @@ func (d *Decoder) readByte() (b byte, err error) {
 		return 0, errTruncated
 	}
 	if d.val != nil {
-		// We are either inside of a primitive element or we have begun discarding the
-		// current element. We cannot read a header here.
+		// We are either inside of a primitive data value or we have begun discarding
+		// the current value. We cannot read a header here.
 		return 0, errors.New("invalid state")
 	}
 
@@ -357,8 +357,8 @@ func (d *Decoder) readByte() (b byte, err error) {
 	return b, nil
 }
 
-// discard discards the remainder of the current element without validating the
-// TLV syntax and removes it from the stack of d.
+// discard discards the remainder of the current data value without validating
+// the TLV syntax and removes it from the stack of d.
 //
 // The number of bytes to be discarded is determined by the length indicated by
 // the preceding TLV headers. If the indefinite-length format is used, the
@@ -372,7 +372,7 @@ func (d *Decoder) readByte() (b byte, err error) {
 // state of d.
 func (d *Decoder) discard() (err error) {
 	if d.state.root() {
-		return errors.New("cannot discard root element")
+		return errors.New("cannot discard root data value")
 	}
 	if d.curr.Length == LengthIndefinite {
 		return errors.New("cannot discard indefinite number of bytes")
@@ -391,16 +391,15 @@ func (d *Decoder) discard() (err error) {
 	d.curr.Offset += d.curr.Remaining()
 	d.peekLen = 0
 
-	// We have successfully discarded the element. The next byte is the start of the
-	// next sibling TLV to the discarded one.
+	// We have successfully discarded the data value. The next byte is the start of
+	// the next sibling TLV to the discarded one.
 	d.state.pop()
 	return nil
 }
 
-// Skip reads the remainder of the value of the current element If the current
-// element uses the primitive encoding, only that element is skipped. If the
-// current element is constructed, everything until the matching end-of-contents
-// is skipped.
+// Skip reads the remainder of the current data value. If it uses the primitive
+// encoding, only that value is skipped. If it is constructed, everything until
+// the matching end-of-contents is skipped.
 //
 // If at any point an error is encountered, the skipping will be stopped and the
 // error returned.
@@ -444,7 +443,7 @@ func (d *Decoder) StackDepth() int { return len(d.stack) }
 //
 // The TLV header at level 0 represents the top level and is not present in the
 // input data. The top-level TLV header is a constructed, indefinite-length
-// element with tag 0.
+// data value with tag 0.
 func (d *Decoder) StackIndex(i int) Header {
 	if i == len(d.stack) {
 		return d.curr.Header

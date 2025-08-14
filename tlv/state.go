@@ -15,7 +15,7 @@ type stateEntry struct {
 }
 
 // Remaining returns the remaining number of bytes within the value, or
-// LengthIndefinite if the length of the element is unknown/indefinite.
+// LengthIndefinite if the length of the data value is unknown/indefinite.
 func (e *stateEntry) Remaining() int {
 	return max(e.Length-e.Offset, LengthIndefinite)
 }
@@ -26,15 +26,15 @@ func (e *stateEntry) Remaining() int {
 // root level of the input stream.
 //
 // Note that during processing only the offset of the topmost stateEntry is
-// updated. Whenever an element is added or removed from the stack, the state
+// updated. Whenever a data value is added or removed from the stack, the state
 // type maintains this invariant and updates the new topmost entry.
 type state struct {
 	stack []stateEntry
 	curr  stateEntry // top entry of the stack
 }
 
-// reset clears the state to a single root element. The allocated stack space is
-// reused.
+// reset clears the state to a single (virtual) root data value. The allocated
+// stack space is reused.
 func (s *state) reset() {
 	if s.stack == nil {
 		s.stack = make([]stateEntry, 0, 10)
@@ -62,8 +62,8 @@ func (s *state) push(h Header) {
 	}
 }
 
-// pop removes the topmost element from the stack and updates the remaining
-// state. This indicates that processing of the topmost element is completed.
+// pop removes the topmost data value from the stack and updates the remaining
+// state. This indicates that processing of the value is completed.
 func (s *state) pop() {
 	prev := s.curr
 	s.curr = s.stack[len(s.stack)-1]

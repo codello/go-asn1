@@ -18,11 +18,11 @@
 // end implicitly (when using definite-length encoding) or explicitly
 // (indefinite length).
 //
-// The end of a constructed element is signalled by a zero [Header] (or,
-// equivalently, using [TagEndOfContents]). The [Encoder] and [Decoder] types
-// expect and produce an end-of-contents marker at the end of every constructed
-// encoding, regardless of whether it uses the definite or indefinite-length
-// encoding.
+// The end of a constructed data value is signalled by a zero [Header] (or,
+// equivalently, using [TagEndOfContents] or [EndOfContents]). The [Encoder] and
+// [Decoder] types expect and produce an end-of-contents marker at the end of
+// every constructed encoding, regardless of whether it uses the definite or
+// indefinite-length encoding.
 //
 // The [Encoder] and [Decoder] types contain methods to read and write BER
 // values as a stream of headers, values, and end-of-content markers. They
@@ -40,8 +40,8 @@ import (
 	"codello.dev/asn1"
 )
 
-// TagEndOfContents is the tag that signifies the end of a constructed element.
-// You can use this constant for clarity, the following are the same:
+// TagEndOfContents is the tag that signifies the end of a constructed data
+// value. You can use this constant for clarity, the following are the same:
 //
 //	tlv.Header{}
 //	tlv.Header{Tag: tlv.TagEndOfContents}
@@ -49,7 +49,7 @@ import (
 const TagEndOfContents = asn1.TagReserved
 
 // EndOfContents is the end-of-contents marker signalling the end of a
-// constructed element. The following are equivalent:
+// constructed data value. The following are equivalent:
 //
 //	tlv.Header{}
 //	tlv.Header{Tag: tlv.TagEndOfContents}

@@ -228,7 +228,7 @@ func TestStack(t *testing.T) {
 	}{
 		"Root": {[]byte{},
 			Header{0, true, LengthIndefinite}, 0, 0},
-		"RootAfterElement": {[]byte{0x02, 0x01, 0x15},
+		"RootAfterValue": {[]byte{0x02, 0x01, 0x15},
 			Header{0, true, LengthIndefinite}, 0, 3},
 		"SingleValue": {[]byte{0x02, 0x01},
 			Header{asn1.TagInteger, false, 1}, 1, 2},

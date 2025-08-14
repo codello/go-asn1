@@ -9,7 +9,7 @@ import (
 var (
 	errUnexpectedEOC = errors.New("unexpected end of contents")
 	errInvalidEOC    = errors.New("invalid end of contents")
-	errTruncated     = errors.New("truncated element")
+	errTruncated     = errors.New("truncated data value")
 )
 
 // ioError represents an error that occurred when reading from or writing to an
@@ -24,7 +24,7 @@ func (e *ioError) Error() string { return e.action + " error: " + e.err.Error() 
 
 // SyntaxError represents an error in the TLV encoding. The error value contains
 // the location of the error within the input as well as the [Header] of the
-// surrounding element.
+// surrounding data value.
 type SyntaxError struct {
 	requireKeyedLiterals
 	nonComparable

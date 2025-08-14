@@ -14,9 +14,9 @@ import (
 // [io.Writer] among others. The writer is restricted to write at most n bytes
 // (corresponding to the length of the value).
 //
-// For primitive root elements valueWriter takes care of flushing the internal
-// buffer of [Encoder]. In case of errors during flushing, additional flushes
-// can be triggered via empty writes.
+// For primitive data values at the root level valueWriter takes care of
+// flushing the internal buffer of [Encoder]. In case of errors during flushing,
+// additional flushes can be triggered via empty writes.
 //
 // Errors from the underlying writer may be wrapped before being returned.
 type valueWriter struct {
@@ -43,7 +43,7 @@ func (w *valueWriter) WriteByte(b byte) error {
 	}
 	w.n--
 	if w.n == 0 && w.e.StackDepth() == 1 {
-		// this is a root element
+		// this is a root data value
 		return w.e.buf.Flush()
 	}
 	return err
@@ -121,7 +121,7 @@ type Encoder struct {
 
 // NewEncoder creates a new [Encoder] writing to w. If w does not implement
 // [io.ByteWriter], Encoder will do its own buffering. The buffer is
-// automatically flushed at the end of each top-level element.
+// automatically flushed at the end of each top-level data value.
 func NewEncoder(w io.Writer) *Encoder {
 	e := new(Encoder)
 	e.Reset(w)
@@ -210,7 +210,7 @@ func (e *Encoder) writeHeader(h Header) (io.Writer, error) {
 			}
 		}
 		if e.StackDepth() == 1 {
-			// We have ended a top level element
+			// We have ended a top level data value
 			if err := e.buf.Flush(); err != nil {
 				return nil, err
 			}
@@ -220,9 +220,9 @@ func (e *Encoder) writeHeader(h Header) (io.Writer, error) {
 	}
 
 	if !h.Constructed && h.Length == LengthIndefinite {
-		return nil, errors.New("indefinite-length primitive element")
+		return nil, errors.New("indefinite-length primitive data value")
 	} else if h.Length != LengthIndefinite && uint(h.Length) > uint(e.curr.Remaining()) {
-		return nil, errors.New("element exceeds parent")
+		return nil, errors.New("data value exceeds parent")
 	}
 
 	if err := e.encodeHeader(h); err != nil {
@@ -341,8 +341,8 @@ func (e *Encoder) StackDepth() int { return len(e.stack) }
 // It must be a number between 0 and [Encoder.StackDepth], inclusive.
 //
 // The TLV header at level 0 represents the top level and is not written to the
-// output. The top-level TLV header is a constructed, indefinite-length element
-// with tag 0.
+// output. The top-level TLV header is a constructed, indefinite-length data
+// value with tag 0.
 func (e *Encoder) StackIndex(i int) Header {
 	if i == len(e.stack) {
 		return e.curr.Header
