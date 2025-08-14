@@ -98,37 +98,22 @@ func TestWriteHeader(t *testing.T) {
 			e := NewEncoder(w)
 
 			var err error
-		loop:
+			var val io.Writer
+			var op string
 			for i := 0; i < len(tc.input) && err == nil; i++ {
 				switch h := tc.input[i].(type) {
 				case Header:
-					var value io.Writer
-					value, err = e.WriteHeader(h)
-					var tErr transientError
-					if errors.As(err, &tErr) {
-						// retry after transient error
-						err = nil
-						i--
-						continue
+					op = "e.WriteHeader"
+					val, err = e.WriteHeader(h)
+
+				case []byte:
+					op = "value.Write"
+					if val == nil {
+						t.Fatalf("e.WriteHeader() did not return a value writer, expected non-nil value")
 					}
-					if err != nil {
-						break loop
-					}
-					if i+1 >= len(tc.input) {
-						// no more values
-						continue
-					}
-					data, ok := tc.input[i+1].([]byte)
-					if !ok {
-						// no value given
-						continue
-					}
-					i++
-					if value == nil {
-						t.Errorf("e.WriteHeader() did not return a value writer, expected non-nil value")
-						break loop
-					}
-					_, err = value.Write(data)
+					var n int
+					n, err = val.Write(h)
+					tc.input[i] = h[n:]
 
 				case transientError:
 					wr.err = h
@@ -140,9 +125,17 @@ func TestWriteHeader(t *testing.T) {
 				default:
 					panic(fmt.Sprintf("invalid input type %T", h))
 				}
+
+				var tErr transientError
+				if errors.As(err, &tErr) {
+					// retry after transient error
+					err = nil
+					i--
+					continue
+				}
 			}
 			if !errors.Is(err, tc.wantErr) {
-				t.Errorf("WriteHeader(): got %q, want %q", err, tc.wantErr)
+				t.Errorf("%s(): got %q, want %q", op, err, tc.wantErr)
 			}
 			if !bytes.Equal(got.Bytes(), tc.want) {
 				t.Errorf("WriteHeader(): got %# x, want %# x", got.Bytes(), tc.want)

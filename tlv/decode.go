@@ -26,27 +26,37 @@ type Value struct {
 // Len returns the number of bytes in the unread portion of the value.
 func (v *Value) Len() int {
 	if v.n < 0 {
-		panic("illegal use of Value after ReadHeader()")
+		panic("illegal use of expired Value")
 	}
 	return v.n
 }
 
+// advance gets called when the underlying reader of v has read n bytes.
+func (v *Value) advance(n int) {
+	v.n -= n
+
+	if v.n == 0 {
+		v.d.valueDone()
+	}
+}
+
 // Read implements [io.Reader].
 func (v *Value) Read(p []byte) (int, error) {
-	if v.Len() == 0 {
+	l := v.Len()
+	if l == 0 {
 		return 0, io.EOF
 	}
-	if len(p) > v.Len() {
-		p = p[0:v.Len()]
+	if len(p) > l {
+		p = p[0:l]
 	}
 	n, err := v.d.br.Read(p)
-	v.n -= n
-	if v.Len() > 0 {
+	v.advance(n)
+	if v.n == 0 {
 		// if the underlying reader returns io.EOF with data and v.Len() == 0
 		// we can pass through the EOF.
-		err = noEOF(err)
+		return n, err
 	}
-	return n, err
+	return n, noEOF(err)
 }
 
 // ReadByte implements [io.ByteReader].
@@ -58,7 +68,7 @@ func (v *Value) ReadByte() (b byte, err error) {
 	if err != nil {
 		return 0, noEOF(err)
 	}
-	v.n--
+	v.advance(1)
 	return b, nil
 }
 
@@ -68,11 +78,12 @@ func (v *Value) ReadByte() (b byte, err error) {
 // If the underlying reader of r implements its own Discard method it will be
 // used for more efficient discarding.
 func (v *Value) Discard(n int) (discarded int, err error) {
-	if n == 0 {
+	l := v.Len()
+	if l == 0 {
 		return
 	}
 
-	discard := MinLength(n, v.Len())
+	discard := MinLength(n, l)
 	switch rd := v.d.br.(type) {
 	case interface{ Discard(int) (int, error) }:
 		discarded, err = rd.Discard(discard)
@@ -81,14 +92,25 @@ func (v *Value) Discard(n int) (discarded int, err error) {
 		d, err = io.CopyN(io.Discard, rd, int64(discard))
 		discarded = int(d)
 	}
+	v.advance(discarded)
 
-	if n > v.Len() && err == nil {
+	if n > l && err == nil {
 		err = io.EOF
-	} else if n < v.Len() {
+	} else if n < l {
 		err = noEOF(err)
 	}
-	v.n -= discarded
 	return discarded, err
+}
+
+// Close discards any remaining bytes in the unread portion of v. If v has been
+// read to EOF calling Close is not required.
+func (v *Value) Close() error {
+	l := v.Len()
+	if l == 0 {
+		return nil
+	}
+	_, err := v.Discard(v.Len())
+	return err
 }
 
 //endregion
@@ -180,30 +202,28 @@ func (d *Decoder) Reset(r io.Reader) {
 // The second return value is a non-nil [Value] iff the decoded Header indicates
 // the use of the primitive encoding. The Value can be used to read the contents
 // of the primitive TLV. The returned Value is only valid until the next call of
-// [Decoder.ReadHeader]. Any unread bytes in Value will be discarded.
+// [Decoder.ReadHeader] or [Decoder.PeekHeader]. The Value must be completely
+// read before PeekHeader or ReadHeader is called again.
 //
 // ReadHeader can be used in presence of transient errors. If the underlying
 // reader returns an error during the read operation, ReadHeader will return
 // that error (potentially wrapped). If errors in the underlying reader are
 // non-fatal, you can retry ReadHeader to resume the previous, erroneous call.
 func (d *Decoder) ReadHeader() (Header, *Value, error) {
-	d.peekAt = 0
-	h, err := d.readHeader()
+	h, err := d.PeekHeader()
 	if err != nil {
-		if _, ok := err.(*ioError); err == io.EOF || ok {
-			return h, nil, err
-		}
-		sErr := &SyntaxError{ByteOffset: d.baseOffset, Header: d.curr.Header, Err: err}
-		//goland:noinspection GoDirectComparisonOfErrors
-		if err == io.ErrUnexpectedEOF {
-			sErr.ByteOffset = d.InputOffset()
-		}
-		return h, nil, sErr
+		return h, nil, err
 	}
 	// successful parse, reset peek buffer
 	d.baseOffset += int64(d.peekOffset)
 	d.peekLen = 0
 	d.peekOffset = 0
+
+	if h.Tag == TagEndOfContents {
+		d.state.pop()
+	} else {
+		d.state.push(h)
+	}
 
 	// adjust buffering
 	switch d.StackDepth() {
@@ -219,17 +239,46 @@ func (d *Decoder) ReadHeader() (Header, *Value, error) {
 	return h, d.val, nil
 }
 
+// PeekHeader reads the next TLV header from the input without advancing d. You
+// can consume the peeked header using the ReadHeader method.
+//
+// PeekHeader shares the same semantics as ReadHeader. In particular at the end
+// of constructed data values there is always an EndOfContents (even for
+// definite-length data values) and transient errors from the underlying reader
+// can be retried.
+func (d *Decoder) PeekHeader() (Header, error) {
+	if d.val != nil {
+		if d.val.Len() == 0 {
+			// the previous primitive value has been read completely, invalidate d.val
+			d.val.n = -1
+			d.val = nil
+		} else if !d.curr.Constructed {
+			return Header{}, errors.New("value not fully read")
+		} else {
+			// we have begun discarding the current value. We cannot read a TLV here
+			return Header{}, errors.New("invalid state")
+		}
+	}
+	d.peekAt = 0
+	h, err := d.readHeader()
+	if err != nil {
+		if _, ok := err.(*ioError); err == io.EOF || ok {
+			return h, err
+		}
+		sErr := &SyntaxError{ByteOffset: d.baseOffset, Header: d.curr.Header, Err: err}
+		//goland:noinspection GoDirectComparisonOfErrors
+		if err == io.ErrUnexpectedEOF {
+			sErr.ByteOffset += int64(d.peekOffset)
+		}
+		return h, sErr
+	}
+	return h, nil
+}
+
 // readHeader decodes a TLV header from d. If decoding fails or an invalid TLV
 // structure is detected, an error is returned.
 func (d *Decoder) readHeader() (Header, error) {
-	if !d.curr.Constructed {
-		// discard the (rest of the) primitive data value
-		if err := d.discard(); err != nil {
-			return Header{}, err
-		}
-	}
-	if d.curr.Remaining() == 0 {
-		d.state.pop()
+	if d.curr.Header.Length != LengthIndefinite && d.curr.Remaining() == 0 {
 		return Header{Tag: TagEndOfContents}, nil
 	}
 
@@ -241,9 +290,7 @@ func (d *Decoder) readHeader() (Header, error) {
 		return h, err
 	}
 	if h == (Header{}) && !d.root() && d.curr.Header.Length == LengthIndefinite {
-		// The end-of-contents marker is 0x0000, which coincides with the empty
-		// header.
-		d.state.pop()
+		// The end-of-contents marker is 0x0000, coinciding with the empty header.
 		return h, nil
 	}
 	if h == (Header{}) {
@@ -256,8 +303,6 @@ func (d *Decoder) readHeader() (Header, error) {
 	} else if h.Length != LengthIndefinite && uint(h.Length) > uint(d.curr.Remaining()) {
 		// uint conversion takes care of indefinite length
 		err = errors.New("data value exceeds parent")
-	} else {
-		d.state.push(h)
 	}
 	return h, err
 }
@@ -278,13 +323,13 @@ func (d *Decoder) decodeHeader() (h Header, err error) {
 
 	// If the bottom five bits are set, then the tag number is actually VLQ-encoded
 	if b&0x1f == 0x1f {
-		var n uint16
-		n, err = vlq.ReadMinimal[uint16](byteReaderFunc(d.readByte))
+		var n asn1.Tag
+		n, err = vlq.ReadMinimal[asn1.Tag](byteReaderFunc(d.readByte))
 		if err != nil {
 			return h, noEOF(err)
 		}
 
-		h.Tag = h.Tag.Class() | (asn1.Tag(n) &^ (0b11 << 14))
+		h.Tag = h.Tag.Class() | (n &^ (0b11 << 14))
 		if n > asn1.MaxTag {
 			return h, errors.New("tag number too large")
 		}
@@ -334,11 +379,6 @@ func (d *Decoder) readByte() (b byte, err error) {
 	if d.curr.Remaining() == 0 {
 		return 0, errTruncated
 	}
-	if d.val != nil {
-		// We are either inside of a primitive data value or we have begun discarding
-		// the current value. We cannot read a header here.
-		return 0, errors.New("invalid state")
-	}
 
 	if d.peekAt < d.peekLen {
 		b = d.peekBuf[d.peekAt]
@@ -380,21 +420,35 @@ func (d *Decoder) discard() (err error) {
 	if d.val == nil {
 		// interpret the current TLV as primitive to discard it
 		d.val = &Value{d, d.curr.Remaining()}
+
+		// we might have already peeked at the first header in the value
+		d.baseOffset += int64(d.peekOffset)
+		d.peekOffset = 0
+		d.peekLen = 0
 	}
-	if _, err = d.val.Discard(d.val.Len()); err != nil {
+	if err = d.val.Close(); err != nil {
 		return noEOF(err)
 	}
+	// invalidate d.val
 	d.val.n = -1
 	d.val = nil
-	d.baseOffset += int64(d.peekOffset + d.curr.Remaining())
-	d.peekOffset = 0
-	d.curr.Offset += d.curr.Remaining()
-	d.peekLen = 0
 
 	// We have successfully discarded the data value. The next byte is the start of
 	// the next sibling TLV to the discarded one.
-	d.state.pop()
 	return nil
+}
+
+// valueDone gets called by the Value type when a data value has been fully read.
+// d automatically updates its state accordingly.
+func (d *Decoder) valueDone() {
+	if d.val.Len() != 0 {
+		panic("BUG: value is not completely read")
+	}
+	d.baseOffset += int64(d.curr.Remaining())
+	d.curr.Offset += d.curr.Remaining()
+
+	// We have read the entire data value. The next byte is the start of another TLV
+	d.state.pop()
 }
 
 // Skip reads the remainder of the current data value. If it uses the primitive
@@ -408,8 +462,12 @@ func (d *Decoder) Skip() (err error) {
 		return d.discard()
 	}
 	depth := d.StackDepth()
+	var val *Value
 	for d.StackDepth() >= depth && err == nil {
-		_, _, err = d.ReadHeader()
+		_, val, err = d.ReadHeader()
+		if err == nil && val != nil {
+			err = val.Close()
+		}
 	}
 	return err
 }

@@ -32,6 +32,15 @@ func (w *valueWriter) Len() int {
 	return max(w.n, 0)
 }
 
+// advance gets called when n bytes are written to the underlying writer.
+func (w *valueWriter) advance(n int) error {
+	w.n -= n
+	if w.n == 0 {
+		return w.e.valueDone()
+	}
+	return nil
+}
+
 // WriteByte implements [io.ByteReader].
 func (w *valueWriter) WriteByte(b byte) error {
 	if w.Len() == 0 {
@@ -41,12 +50,7 @@ func (w *valueWriter) WriteByte(b byte) error {
 	if err != nil {
 		return err
 	}
-	w.n--
-	if w.n == 0 && w.e.StackDepth() == 1 {
-		// this is a root data value
-		return w.e.buf.Flush()
-	}
-	return err
+	return w.advance(1)
 }
 
 // Write implements [io.Writer].
@@ -60,13 +64,10 @@ func (w *valueWriter) Write(p []byte) (n int, err error) {
 	} else if err == nil && write < len(p) {
 		err = errTruncated
 	}
-	w.n -= n
-	if w.n == 0 && w.e.StackDepth() == 1 {
+	if fErr := w.advance(n); err == nil {
 		// w.wr.Write might return n == w.n and a non-nil error.
-		// In that case we try to flush, but use the write error.
-		if fErr := w.e.buf.Flush(); err == nil {
-			err = fErr
-		}
+		// In that case we still advance, but prefer the original write error.
+		err = fErr
 	}
 	return n, err
 }
@@ -75,7 +76,11 @@ func (w *valueWriter) Write(p []byte) (n int, err error) {
 // the underlying writer implements [io.ReaderFrom].
 func (w *valueWriter) ReadFrom(r io.Reader) (n int64, err error) {
 	n, err = io.Copy(w.e.wr, io.LimitReader(r, int64(w.n)))
-	w.n -= int(n)
+	if fErr := w.advance(int(n)); err == nil {
+		// io.Copy might return n == w.n and a non-nil error.
+		// In that case we still advance, but prefer the original write error.
+		err = fErr
+	}
 	return n, err
 }
 
@@ -168,72 +173,71 @@ func (e *Encoder) Reset(w io.Writer) {
 // consistent state after an error, you can retry the WriteHeader operation
 // (using the same value for h) to resume the previous write operation.
 func (e *Encoder) WriteHeader(h Header) (io.Writer, error) {
-	val, err := e.writeHeader(h)
+	if e.val != nil {
+		if e.val.Len() == 0 {
+			// the previous primitive value has been written completely, invalidate e.val
+			e.val.n = -1
+			e.val = nil
+		} else {
+			return nil, errors.New("value not fully written")
+		}
+	}
+	err := e.writeHeader(h)
 	if err != nil {
 		if _, ok := err.(*ioError); !ok {
 			e.peekLen = 0 // we haven't written anything
 			err = &SyntaxError{ByteOffset: e.offset, Header: e.curr.Header, Err: err}
 		}
-		return val, err
+		return nil, err
+	}
+
+	if h.Tag == TagEndOfContents {
+		e.state.pop()
+	} else {
+		e.state.push(h)
 	}
 	// when using buffering we prefer to write complete headers/values
 	e.buf.Flushable()
-	return val, err
+
+	if !h.Constructed {
+		e.val = &valueWriter{e, e.curr.Remaining()}
+	}
+	return e.val, err
 }
 
 // writeHeader encodes a TLV header into e. If encoding fails or h is not a
 // valid next TLV, an error is returned.
-func (e *Encoder) writeHeader(h Header) (io.Writer, error) {
-	if !e.curr.Constructed {
-		if e.val.n > 0 {
-			return nil, errors.New("value not fully written")
-		}
-		e.val.n = -1
-		e.val = nil
-		e.curr.Offset += e.curr.Length
-		e.offset += int64(e.curr.Length)
-		e.state.pop()
-	}
-
+func (e *Encoder) writeHeader(h Header) error {
 	if h.Tag == TagEndOfContents {
 		switch {
 		case h != Header{}:
-			return nil, errInvalidEOC
+			return errInvalidEOC
 		case e.state.root() || !e.curr.Constructed:
-			return nil, errUnexpectedEOC
+			return errUnexpectedEOC
 		case e.curr.Header.Length != LengthIndefinite && e.curr.Remaining() != 0:
-			return nil, errUnexpectedEOC
+			return errUnexpectedEOC
 		}
 		if e.curr.Header.Length == LengthIndefinite {
 			if err := e.encodeHeader(h); err != nil {
-				return nil, err
+				return err
 			}
 		}
 		if e.StackDepth() == 1 {
 			// We have ended a top level data value
 			if err := e.buf.Flush(); err != nil {
-				return nil, err
+				return err
 			}
 		}
-		e.state.pop()
-		return nil, nil
+		return nil
 	}
 
 	if !h.Constructed && h.Length == LengthIndefinite {
-		return nil, errors.New("indefinite-length primitive data value")
+		return errors.New("indefinite-length primitive data value")
 	} else if h.Length != LengthIndefinite && uint(h.Length) > uint(e.curr.Remaining()) {
-		return nil, errors.New("data value exceeds parent")
+		return errors.New("data value exceeds parent")
 	}
 
-	if err := e.encodeHeader(h); err != nil {
-		return nil, err
-	}
-	e.state.push(h)
-	if !h.Constructed {
-		e.val = &valueWriter{e, e.curr.Remaining()}
-		return e.val, nil
-	}
-	return nil, nil
+	return e.encodeHeader(h)
 }
 
 // encodeHeader encodes h into the TLV format. Data is written using writeByte
@@ -315,6 +319,25 @@ func (e *Encoder) flush() error {
 		err = &ioError{"write", err}
 	}
 	return err
+}
+
+// valueDone gets called by the valueWriter type when a data value has been
+// fully written. e automatically updates its state accordingly.
+func (e *Encoder) valueDone() error {
+	if e.val.Len() != 0 {
+		panic("BUG: value is not completely written")
+	}
+	e.curr.Offset += e.curr.Length
+	e.offset += int64(e.curr.Length)
+
+	// We have written the entire data value. Next another TLV must follow.
+	e.state.pop()
+
+	if e.state.root() {
+		// this is a root data value
+		return e.buf.Flush()
+	}
+	return nil
 }
 
 // OutputOffset returns the current output byte offset. It gives the location of

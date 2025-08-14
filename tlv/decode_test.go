@@ -53,9 +53,11 @@ func (r *testDataReader) Read(p []byte) (n int, err error) {
 //     the [Header] that immediately precedes it.
 //   - The expected offset is the expected [Decoder.InputOffset] after the output
 //     sequence has been processed.
-func TestReadHeader(t *testing.T) {
-	// anyError can be used in the want array to match any non-nil error
-	var anyError = errors.New("any error")
+func TestDecoder_ReadHeader(t *testing.T) {
+	// noError can be used in the input array to assert the error of the previous operation
+	var noError error = nil
+	// otherError can be used in the want array to match any non-nil, non-EOF, non-syntax error
+	var otherError = errors.New("any error")
 	// errTransient simulates a transient error
 	var errTransient = errors.New("transient error")
 
@@ -65,10 +67,10 @@ func TestReadHeader(t *testing.T) {
 		offset int64
 	}{
 		"SingleValue": {[]any{0x02, 0x01, 0x15},
-			[]any{Header{asn1.TagInteger, false, 1}, []byte{0x15}, io.EOF},
+			[]any{Header{asn1.TagInteger, false, 1}, []byte{0x15}, noError, io.EOF},
 			3},
 		"MultipleValues": {[]any{0x02, 0x01, 0x15, 0x02, 0x01, 0x03},
-			[]any{Header{asn1.TagInteger, false, 1}, []byte{0x15}, Header{asn1.TagInteger, false, 1}, []byte{0x03}, io.EOF},
+			[]any{Header{asn1.TagInteger, false, 1}, []byte{0x15}, Header{asn1.TagInteger, false, 1}, []byte{0x03}, noError, io.EOF},
 			6},
 		"EmptyConstructed": {[]any{0x30, 0x00},
 			[]any{Header{asn1.TagSequence, true, 0}, EndOfContents, io.EOF},
@@ -85,6 +87,9 @@ func TestReadHeader(t *testing.T) {
 		"IndefiniteInDefinite": {[]any{0x30, 0x07, 0x30, 0x80, 0x02, 0x01, 0x15, 0x00, 0x00},
 			[]any{Header{asn1.TagSequence, true, 7}, Header{asn1.TagSequence, true, LengthIndefinite}, Header{asn1.TagInteger, false, 1}, []byte{0x15}, EndOfContents, EndOfContents, io.EOF},
 			9},
+		"IndefiniteInDefiniteNoEnd": {[]any{0x30, 0x05, 0x30, 0x80, 0x02, 0x01, 0x15},
+			[]any{Header{asn1.TagSequence, true, 5}, Header{asn1.TagSequence, true, LengthIndefinite}, Header{asn1.TagInteger, false, 1}, []byte{0x15}, noError, &SyntaxError{}},
+			7},
 
 		// Unexpected/Invalid End-of-Contents
 		"UnexpectedEOC": {[]any{0x30, 0x03, 0x00, 0x00, 0x00},
@@ -96,18 +101,18 @@ func TestReadHeader(t *testing.T) {
 
 		// Testing Tag and Length Values
 		"LargeTag": {[]any{0x1F, 0x84, 0x01, 0x00},
-			[]any{Header{0x0201, false, 0}, io.EOF},
+			[]any{Header{0x0201, false, 0}, EndOfContents, io.EOF},
 			4},
 		"NonMinimalTag": {[]any{0x1F, 0x80, 0x05, 0x00},
-			[]any{anyError},
+			[]any{&SyntaxError{}},
 			0},
 		"LargePaddedLength": {[]any{0x04, 0x84, 0x00, 0x00, 0x00, 0x03, 0x01, 0x02, 0x03},
-			[]any{Header{asn1.TagOctetString, false, 3}, []byte{0x01, 0x02, 0x03}, io.EOF},
+			[]any{Header{asn1.TagOctetString, false, 3}, []byte{0x01, 0x02, 0x03}, noError, io.EOF},
 			9},
 
 		// Structural Errors
 		"ChildExceedsParent": {[]any{0x30, 0x03, 0x02, 0x02, 0x15, 0x15},
-			[]any{Header{asn1.TagSequence, true, 3}, anyError},
+			[]any{Header{asn1.TagSequence, true, 3}, &SyntaxError{}},
 			2},
 
 		// Reader Errors
@@ -118,55 +123,86 @@ func TestReadHeader(t *testing.T) {
 			[]any{errTransient, errTransient, Header{asn1.TagSequence, true, 3}, errTransient, Header{asn1.TagInteger, false, 1}, []byte{0x15}, EndOfContents, io.EOF, io.EOF},
 			5},
 		"UnexpectedEOF": {[]any{0x30, 0x03, 0x02, 0x01},
-			[]any{Header{asn1.TagSequence, true, 3}, Header{asn1.TagInteger, false, 1}, io.ErrUnexpectedEOF},
+			[]any{Header{asn1.TagSequence, true, 3}, Header{asn1.TagInteger, false, 1}, []byte{}, io.ErrUnexpectedEOF},
 			4},
 	}
 	for name, tc := range tt {
+		isError := func(err any) bool {
+			_, ok := err.(error)
+			return ok
+		}
+		isBytes := func(bs any) bool {
+			_, ok := bs.([]byte)
+			return ok
+		}
+
 		t.Run(name, func(t *testing.T) {
 			d := NewDecoder(&testDataReader{tc.input})
-			for i := 0; i < len(tc.want); i++ {
-				h, val, err := d.ReadHeader()
-
+			var val *Value
+			var err error
+			var got any
+			for i := range tc.want {
 				switch want := tc.want[i].(type) {
 				case error:
-					if err == nil {
-						t.Fatalf("d.ReadHeader(): got %s, wanted error", h)
-					}
-					//goland:noinspection GoDirectComparisonOfErrors
-					if want != anyError && !errors.Is(err, want) {
-						t.Fatalf("d.ReadHeader(): got %q, wanted %q", err, want)
+					var op string
+					if i > 0 && isBytes(tc.want[i-1]) {
+						// expect error during last Value read
+						// err is already set
+						op = "Value.Read"
+					} else {
+						// expect error during next ReadHeader()
+						got, _, err = d.ReadHeader()
+						op = "d.ReadHeader"
 					}
 
+					if err == nil {
+						t.Fatalf("%s(): got %q, wanted %q", op, got, want)
+					}
+					var ok bool
+					var sErr *SyntaxError
+					if err == io.EOF {
+						ok = want == io.EOF
+					} else if errors.Is(err, want) {
+						ok = true
+					} else if errors.As(err, &sErr) {
+						ok = errors.As(want, &sErr)
+					} else {
+						//goland:noinspection GoDirectComparisonOfErrors
+						ok = want == otherError
+					}
+					if !ok {
+						t.Fatalf("%s(): got %q, wanted %q", op, err, want)
+					}
+
+					err = nil
+
 				case Header:
-					// assert h
+					var h Header
+					h, val, err = d.ReadHeader()
 					if err != nil {
-						t.Errorf("d.ReadHeader() produced an unexpected error: %s, expected %v", err, want)
-						return
+						t.Fatalf("d.ReadHeader(): returned an unexpected error %q", err)
 					}
 					if !reflect.DeepEqual(h, want) {
-						t.Errorf("d.ReadHeader() = %s, want %s", h, want)
-						return
+						t.Fatalf("d.ReadHeader() = %s, want %s", h, want)
 					}
-					// assert val
-					if i+1 >= len(tc.want) {
-						// no assertion on value given
-						continue
+
+				case []byte:
+					if val == nil {
+						t.Fatalf("d.ReadHeader(): returned no Value, wanted non-nil Value")
 					}
-					wantBytes, ok := tc.want[i+1].([]byte)
-					if !ok {
-						// no assertion on value given
-						continue
+					got, err = io.ReadAll(val)
+					if i+1 >= len(tc.want) || !isError(tc.want[i+1]) {
+						// no errors assertion given, implied no error
+						if err != nil {
+							t.Fatalf("Value.Read() produced an unexpected error: %q", err)
+						}
 					}
-					i++
-					got, err := io.ReadAll(val)
-					if err != nil {
-						t.Errorf("d.Value() produced an unexpected error: %s", err)
-						return
+					if !bytes.Equal(got.([]byte), want) {
+						t.Fatalf("Value.Read() = %q, want %q", got, want)
 					}
-					if !bytes.Equal(got, wantBytes) {
-						t.Errorf("d.Value() = %q, want %q", got, wantBytes)
-						return
-					}
+
+				case nil:
+					// nil can be used after []byte to assert following ReadHeader errors.
 
 				default:
 					t.Fatalf("unexpected type in test case: %T", tc.want[i])
@@ -179,7 +215,30 @@ func TestReadHeader(t *testing.T) {
 	}
 }
 
-func TestSkip(t *testing.T) {
+func TestDecoder_PeekHeader(t *testing.T) {
+	data := []byte{0x30, 0x07, 0x30, 0x80, 0x02, 0x01, 0x15, 0x00, 0x00}
+	d := NewDecoder(bytes.NewReader(data))
+	for i := 3; i >= 0; i-- {
+		h, err := d.PeekHeader()
+		if i == 0 {
+			h, _, err = d.ReadHeader()
+		}
+		if err != nil {
+			t.Fatalf("d.PeekHeader() [%d]: got %v, want nil", i, err)
+		}
+		if h != (Header{asn1.TagSequence, true, 7}) {
+			t.Errorf("d.PeekHeader() [%d]: got %v, want %v", i, h, Header{asn1.TagSequence, true, 7})
+		}
+		if i > 0 && d.InputOffset() != 0 {
+			t.Errorf("d.InputOffset() [%d] = %d, want 0", i, d.InputOffset())
+		}
+	}
+	if d.InputOffset() != 2 {
+		t.Errorf("d.InputOffset() = %d, want 2", d.InputOffset())
+	}
+}
+
+func TestDecoder_Skip(t *testing.T) {
 	tests := map[string]struct {
 		input  []byte
 		read   int
@@ -219,7 +278,7 @@ func TestSkip(t *testing.T) {
 	}
 }
 
-func TestStack(t *testing.T) {
+func TestDecoder_Stack(t *testing.T) {
 	tests := map[string]struct {
 		input  []byte
 		want   Header
@@ -241,8 +300,12 @@ func TestStack(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			d := NewDecoder(bytes.NewReader(tc.input))
 			var err error
+			var val *Value
 			for err == nil {
-				_, _, err = d.ReadHeader()
+				_, val, err = d.ReadHeader()
+				if err == nil && val != nil {
+					err = val.Close()
+				}
 			}
 			if d.StackDepth() != tc.depth {
 				t.Errorf("d.StackDepth() = %d, want %d", d.StackDepth(), tc.depth)
