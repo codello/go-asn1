@@ -5,21 +5,11 @@ import (
 	"io"
 )
 
-//region Read Helpers
-
-// byteReader is the base reader type needed for [Decoder] and [Value].
-type byteReader interface {
-	io.Reader
-	io.ByteReader
-}
-
 // byteReaderFunc is a function that can read a single byte from an underlying
 // byte stream. It implements [io.ByteReader].
 type byteReaderFunc func() (byte, error)
 
 func (f byteReaderFunc) ReadByte() (byte, error) { return f() }
-
-//endregion
 
 //region bufferedReader
 
@@ -221,23 +211,103 @@ func (b *bufferedReader) Discard(n int) (discarded int, err error) {
 	return discarded, nil
 }
 
-// discard discards up to n bytes from v. It returns the number of bytes
-// discarded. An error is returned iff discarded < n.
-//
-// If the underlying reader of r implements its own Discard method it will be
-// used for more efficient discarding.
-func discard(r io.Reader, n int) (discarded int, err error) {
-	switch rd := r.(type) {
-	case interface{ Discard(int) (int, error) }:
-		discarded, err = rd.Discard(n)
-	default:
-		var d int64
-		d, err = io.CopyN(io.Discard, rd, int64(n))
-		discarded = int(d)
-	}
-	return discarded, err
+//endregion
+
+// byteWriterFunc is a function that can write a single byte to an underlying
+// byte stream. It implements [io.ByteWriter].
+type byteWriterFunc func(byte) error
+
+func (f byteWriterFunc) WriteByte(b byte) error { return f(b) }
+
+//region bufferedWriter
+
+type bufferedWriter struct {
+	wr  io.Writer
+	buf []byte
+	n   int
+	cp  int // flushable checkpoint
 }
 
-//endregion
+func (b *bufferedWriter) Reset(w io.Writer) {
+	b.wr = w
+	if b.buf == nil && w != nil {
+		b.buf = make([]byte, 1024)
+	}
+	b.n = 0
+	b.cp = 0
+}
+
+func (b *bufferedWriter) Flushable() {
+	b.cp = b.n
+}
+
+func (b *bufferedWriter) Flush() error {
+	// Flush should flush the entire buffer, so we implicitly accept the current
+	// position as flushable
+	b.Flushable()
+	return b.flush()
+}
+
+func (b *bufferedWriter) flush() error {
+	if b.n == 0 {
+		return nil
+	}
+	write := b.cp
+	if write == 0 {
+		// We have to write some bytes.
+		// Without a checkpoint we flush the entire buffer.
+		write = b.n
+	}
+	n, err := b.wr.Write(b.buf[:write])
+	if n > 0 {
+		// move unwritten data to the front of the buffer
+		copy(b.buf[0:b.n-n], b.buf[n:b.n])
+		b.n -= n
+		b.cp = max(b.cp-n, 0)
+	}
+	if n < b.cp && err == nil {
+		err = io.ErrShortWrite
+	}
+	return err
+}
+
+func (b *bufferedWriter) Available() int { return len(b.buf) - b.n }
+
+func (b *bufferedWriter) Buffered() int { return b.n }
+
+func (b *bufferedWriter) Write(p []byte) (nn int, err error) {
+	for len(p) > b.Available() && err == nil {
+		var n int
+		if b.Buffered() == 0 {
+			// Large write, empty buffer.
+			// Write directly from p to avoid copy.
+			n, err = b.wr.Write(p)
+		} else {
+			n = copy(b.buf[b.n:], p)
+			b.n += n
+			err = b.flush()
+		}
+		nn += n
+		p = p[n:]
+	}
+	if err != nil {
+		return nn, err
+	}
+	n := copy(b.buf[b.n:], p)
+	b.n += n
+	nn += n
+	return nn, nil
+}
+
+func (b *bufferedWriter) WriteByte(c byte) error {
+	if b.Available() <= 0 {
+		if err := b.flush(); err != nil {
+			return err
+		}
+	}
+	b.buf[b.n] = c
+	b.n++
+	return nil
+}
 
 //endregion

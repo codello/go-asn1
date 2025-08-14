@@ -74,3 +74,60 @@ func TestBufferedReader_Discard(t *testing.T) {
 		}
 	})
 }
+
+func TestBufferedWriter(t *testing.T) {
+	input := strings.Repeat("abc", 1024)
+
+	var buf bytes.Buffer
+	buf.Grow(len(input))
+	w := new(bufferedWriter)
+	w.Reset(&buf)
+	n, err := io.WriteString(w, input)
+	if err != nil {
+		t.Errorf("io.WriteString(w) returned an unexpected error: %s", err)
+	}
+	err = w.Flush()
+	if err != nil {
+		t.Errorf("w.Flush() returned an unexpected error: %s", err)
+	}
+	if n != len(input) {
+		t.Errorf("io.WriteString(w) = %d, expected %d", n, len(input))
+	}
+}
+
+func TestBufferedWriter_Flushable(t *testing.T) {
+	input := strings.Repeat("abc", 1024)
+
+	var buf bytes.Buffer
+	buf.Grow(len(input))
+	w := &bufferedWriter{buf: make([]byte, 1024)}
+	w.Reset(&buf)
+	n, err := io.WriteString(w, input[0:500])
+	if err != nil {
+		t.Errorf("io.WriteString(w) returned an unexpected error: %s", err)
+	}
+	if n != 500 {
+		t.Errorf("io.WriteString(w) = %d, expected %d", n, 500)
+	}
+	w.Flushable()
+	n, err = io.WriteString(w, input[500:1500])
+	if err != nil {
+		t.Errorf("io.WriteString(w) returned an unexpected error: %s", err)
+	}
+	if n != 1000 {
+		t.Errorf("io.WriteString(w) = %d, expected %d", n, 1000)
+	}
+	if buf.Len() != 500 {
+		t.Errorf("buf.Len() = %d, expected %d", buf.Len(), 500)
+	}
+	n, err = io.WriteString(w, input[1500:2000])
+	if err != nil {
+		t.Errorf("io.WriteString(w) returned an unexpected error: %s", err)
+	}
+	if n != 500 {
+		t.Errorf("io.WriteString(w) = %d, expected %d", n, 500)
+	}
+	if buf.Len() != 500+1024 {
+		t.Errorf("buf.Len() = %d, expected %d", buf.Len(), 500+1024)
+	}
+}
