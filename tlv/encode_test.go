@@ -98,7 +98,7 @@ func TestWriteHeader(t *testing.T) {
 			e := NewEncoder(w)
 
 			var err error
-			var val io.Writer
+			var val io.WriteCloser
 			var op string
 			for i := 0; i < len(tc.input) && err == nil; i++ {
 				switch h := tc.input[i].(type) {
@@ -114,13 +114,18 @@ func TestWriteHeader(t *testing.T) {
 					var n int
 					n, err = val.Write(h)
 					tc.input[i] = h[n:]
-
-				case transientError:
-					wr.err = h
-					wr.n = int(h)
+					if err == nil {
+						err = val.Close()
+					}
 
 				case error:
-					wr.err = h
+					var tErr transientError
+					if errors.Is(h, &tErr) {
+						wr.err = h
+						wr.n = int(tErr)
+					} else {
+						wr.err = h
+					}
 
 				default:
 					panic(fmt.Sprintf("invalid input type %T", h))
@@ -139,6 +144,9 @@ func TestWriteHeader(t *testing.T) {
 			}
 			if !bytes.Equal(got.Bytes(), tc.want) {
 				t.Errorf("WriteHeader(): got %# x, want %# x", got.Bytes(), tc.want)
+			}
+			if e.OutputOffset() != int64(len(tc.want)) {
+				t.Errorf("OutputOffset(): got %d, want %d", e.OutputOffset(), len(tc.want))
 			}
 		})
 	}

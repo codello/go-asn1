@@ -10,6 +10,7 @@ var (
 	errUnexpectedEOC = errors.New("unexpected end of contents")
 	errInvalidEOC    = errors.New("invalid end of contents")
 	errTruncated     = errors.New("truncated data value")
+	errClosed        = errors.New("tlv: value closed")
 )
 
 // ioError represents an error that occurred when reading from or writing to an
@@ -42,7 +43,7 @@ type SyntaxError struct {
 
 func (e *SyntaxError) Unwrap() error { return e.Err }
 func (e *SyntaxError) Error() string {
-	b := []byte("syntax error")
+	b := []byte("tlv: syntax error")
 	if e.Header.Tag != TagEndOfContents {
 		b = append(b, " within "...)
 		b = append(b, e.Header.String()...)

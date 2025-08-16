@@ -12,8 +12,8 @@
 //
 // In BER each value is encoded using a tag-length-value format. The tag and
 // length (we call them a header) are represented by the [Header] type. Values
-// can use the primitive or constructed encoding. Primitive values are
-// represented by the [Value] type (which is an [io.Reader]). Values using the
+// can use the primitive or constructed encoding. Primitive values can be read
+// and written via [io.Reader] and [io.Writer] interfaces. Values using the
 // constructed encoding are followed by more BER-encoded values and can either
 // end implicitly (when using definite-length encoding) or explicitly
 // (indefinite length).

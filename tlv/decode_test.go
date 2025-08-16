@@ -101,7 +101,7 @@ func TestDecoder_ReadHeader(t *testing.T) {
 
 		// Testing Tag and Length Values
 		"LargeTag": {[]any{0x1F, 0x84, 0x01, 0x00},
-			[]any{Header{0x0201, false, 0}, EndOfContents, io.EOF},
+			[]any{Header{0x0201, false, 0}, []byte{}, noError, io.EOF},
 			4},
 		"NonMinimalTag": {[]any{0x1F, 0x80, 0x05, 0x00},
 			[]any{&SyntaxError{}},
@@ -138,7 +138,7 @@ func TestDecoder_ReadHeader(t *testing.T) {
 
 		t.Run(name, func(t *testing.T) {
 			d := NewDecoder(&testDataReader{tc.input})
-			var val *Value
+			var val io.ReadCloser
 			var err error
 			var got any
 			for i := range tc.want {
@@ -146,9 +146,9 @@ func TestDecoder_ReadHeader(t *testing.T) {
 				case error:
 					var op string
 					if i > 0 && isBytes(tc.want[i-1]) {
-						// expect error during last Value read
+						// expected error during last value read
 						// err is already set
-						op = "Value.Read"
+						op = "valueReader.Read"
 					} else {
 						// expect error during next ReadHeader()
 						got, _, err = d.ReadHeader()
@@ -180,7 +180,7 @@ func TestDecoder_ReadHeader(t *testing.T) {
 					var h Header
 					h, val, err = d.ReadHeader()
 					if err != nil {
-						t.Fatalf("d.ReadHeader(): returned an unexpected error %q", err)
+						t.Fatalf("d.ReadHeader(): returned an unexpected error %q, want %s", err, want)
 					}
 					if !reflect.DeepEqual(h, want) {
 						t.Fatalf("d.ReadHeader() = %s, want %s", h, want)
@@ -188,17 +188,20 @@ func TestDecoder_ReadHeader(t *testing.T) {
 
 				case []byte:
 					if val == nil {
-						t.Fatalf("d.ReadHeader(): returned no Value, wanted non-nil Value")
+						t.Fatalf("d.ReadHeader(): returned no value, wanted non-nil io.ReadCloser")
 					}
 					got, err = io.ReadAll(val)
+					if err == nil {
+						err = val.Close()
+					}
 					if i+1 >= len(tc.want) || !isError(tc.want[i+1]) {
 						// no errors assertion given, implied no error
 						if err != nil {
-							t.Fatalf("Value.Read() produced an unexpected error: %q", err)
+							t.Fatalf("valueReader.Read() produced an unexpected error: %q", err)
 						}
 					}
 					if !bytes.Equal(got.([]byte), want) {
-						t.Fatalf("Value.Read() = %q, want %q", got, want)
+						t.Fatalf("valueReader.Read() = %q, want %q", got, want)
 					}
 
 				case nil:
@@ -300,7 +303,7 @@ func TestDecoder_Stack(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			d := NewDecoder(bytes.NewReader(tc.input))
 			var err error
-			var val *Value
+			var val io.ReadCloser
 			for err == nil {
 				_, val, err = d.ReadHeader()
 				if err == nil && val != nil {

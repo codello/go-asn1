@@ -9,48 +9,41 @@ import (
 	"codello.dev/asn1/internal/vlq"
 )
 
-//region Value
+//region valueReader
 
-// Value represents a primitive TLV value. It implements [io.Reader] among
-// others. At the end of the primitive value, Value returns [io.EOF]. Note that
-// this only indicates the end of a single value, not the end of the
+// valueReader represents a primitive TLV value. It implements [io.Reader] among
+// others. At the end of the primitive value, valueReader returns [io.EOF]. Note
+// that this only indicates the end of a single value, not the end of the
 // corresponding [Decoder] stream. If the underlying reader returns [io.EOF]
 // before the value has been read completely, [io.ErrUnexpectedEOF] is returned.
 //
 // Errors from the underlying reader may be wrapped before being returned.
-type Value struct {
+type valueReader struct {
 	d *Decoder
 	n int // remaining number of bytes
 }
 
 // Len returns the number of bytes in the unread portion of the value.
-func (v *Value) Len() int {
-	if v.n < 0 {
-		panic("illegal use of expired Value")
-	}
-	return v.n
-}
-
-// advance gets called when the underlying reader of v has read n bytes.
-func (v *Value) advance(n int) {
-	v.n -= n
-
-	if v.n == 0 {
-		v.d.valueDone()
-	}
+func (v *valueReader) Len() int {
+	return max(v.n, 0)
 }
 
 // Read implements [io.Reader].
-func (v *Value) Read(p []byte) (int, error) {
-	l := v.Len()
-	if l == 0 {
+func (v *valueReader) Read(p []byte) (int, error) {
+	if v.n < 0 {
+		return 0, errClosed
+	}
+	if v.Len() == 0 {
 		return 0, io.EOF
 	}
-	if len(p) > l {
-		p = p[0:l]
+	if len(p) > v.Len() {
+		p = p[0:v.Len()]
 	}
 	n, err := v.d.br.Read(p)
-	v.advance(n)
+	v.n -= n
+	if err != nil && err != io.EOF {
+		err = &ioError{"read", err}
+	}
 	if v.n == 0 {
 		// if the underlying reader returns io.EOF with data and v.Len() == 0
 		// we can pass through the EOF.
@@ -60,15 +53,22 @@ func (v *Value) Read(p []byte) (int, error) {
 }
 
 // ReadByte implements [io.ByteReader].
-func (v *Value) ReadByte() (b byte, err error) {
+func (v *valueReader) ReadByte() (b byte, err error) {
+	if v.n < 0 {
+		return 0, errClosed
+	}
 	if v.Len() == 0 {
 		return 0, io.EOF
 	}
 	b, err = v.d.br.ReadByte()
 	if err != nil {
-		return 0, noEOF(err)
+		if err == io.EOF {
+			return 0, io.ErrUnexpectedEOF
+		} else {
+			return 0, &ioError{"read", err}
+		}
 	}
-	v.advance(1)
+	v.n--
 	return b, nil
 }
 
@@ -77,40 +77,50 @@ func (v *Value) ReadByte() (b byte, err error) {
 //
 // If the underlying reader of r implements its own Discard method it will be
 // used for more efficient discarding.
-func (v *Value) Discard(n int) (discarded int, err error) {
-	l := v.Len()
-	if l == 0 {
-		return
+func (v *valueReader) Discard(n int) (discarded int, err error) {
+	if n < 0 {
+		return 0, errors.New("tlv: negative count")
+	}
+	if v.n < 0 {
+		return 0, errClosed
 	}
 
-	discard := MinLength(n, l)
-	switch rd := v.d.br.(type) {
-	case interface{ Discard(int) (int, error) }:
-		discarded, err = rd.Discard(discard)
-	default:
-		var d int64
-		d, err = io.CopyN(io.Discard, rd, int64(discard))
-		discarded = int(d)
+	l := v.Len()
+	discard := min(n, l)
+	if discard > 0 {
+		switch rd := v.d.br.(type) {
+		case interface{ Discard(int) (int, error) }:
+			discarded, err = rd.Discard(discard)
+		default:
+			var d int64
+			d, err = io.CopyN(io.Discard, rd, int64(discard))
+			discarded = int(d)
+		}
+		v.n -= discarded
 	}
-	v.advance(discarded)
 
 	if n > l && err == nil {
 		err = io.EOF
 	} else if n < l {
 		err = noEOF(err)
 	}
+	if err != nil && err != io.EOF {
+		err = &ioError{"read", err}
+	}
 	return discarded, err
 }
 
 // Close discards any remaining bytes in the unread portion of v. If v has been
-// read to EOF calling Close is not required.
-func (v *Value) Close() error {
-	l := v.Len()
-	if l == 0 {
-		return nil
+// read to EOF calling Close will never return an error.
+func (v *valueReader) Close() error {
+	if v.n < 0 {
+		return errClosed
+	} else if _, err := v.Discard(v.Len()); err != nil {
+		return err
 	}
-	_, err := v.Discard(v.Len())
-	return err
+	v.n = -1
+	v.d.valueDone()
+	return nil
 }
 
 //endregion
@@ -131,7 +141,7 @@ type Decoder struct {
 		io.ByteReader
 	}
 	buf bufferedReader // internal buffering
-	val *Value
+	val *valueReader
 
 	baseOffset int64 // beginning of next TLV or value
 	peekOffset int   // relative to baseOffset
@@ -199,31 +209,31 @@ func (d *Decoder) Reset(r io.Reader) {
 // the TLV header, or it is detected that the TLV structure is invalid, an error
 // is returned.
 //
-// The second return value is a non-nil [Value] iff the decoded Header indicates
-// the use of the primitive encoding. The Value can be used to read the contents
-// of the primitive TLV. The returned Value is only valid until the next call of
-// [Decoder.ReadHeader] or [Decoder.PeekHeader]. The Value must be completely
-// read before PeekHeader or ReadHeader is called again.
+// The second return value is non-nil iff the decoded Header indicates the use
+// of the primitive encoding. The [io.ReadCloser] can be used to read the
+// contents of the primitive TLV. It also implements [io.ByteReader].
+// [io.Closer.Close] must be called before the next call of [Decoder.ReadHeader]
+// or [Decoder.PeekHeader].
 //
 // ReadHeader can be used in presence of transient errors. If the underlying
 // reader returns an error during the read operation, ReadHeader will return
 // that error (potentially wrapped). If errors in the underlying reader are
 // non-fatal, you can retry ReadHeader to resume the previous, erroneous call.
-func (d *Decoder) ReadHeader() (Header, *Value, error) {
+func (d *Decoder) ReadHeader() (Header, io.ReadCloser, error) {
 	h, err := d.PeekHeader()
 	if err != nil {
 		return h, nil, err
 	}
-	// successful parse, reset peek buffer
-	d.baseOffset += int64(d.peekOffset)
-	d.peekLen = 0
-	d.peekOffset = 0
+	// successful parse, consume the header
 
 	if h.Tag == TagEndOfContents {
 		d.state.pop()
 	} else {
-		d.state.push(h)
+		d.state.push(h, d.baseOffset)
 	}
+	d.baseOffset += int64(d.peekOffset)
+	d.peekLen = 0
+	d.peekOffset = 0
 
 	// adjust buffering
 	switch d.StackDepth() {
@@ -232,10 +242,10 @@ func (d *Decoder) ReadHeader() (Header, *Value, error) {
 	case 0: // we have just read the end of a top-level data value
 		d.buf.SetLimit(0)
 	}
-	if d.curr.Constructed {
+	if d.curr.Constructed || h.Tag == TagEndOfContents {
 		return h, nil, nil
 	}
-	d.val = &Value{d, d.curr.Remaining()}
+	d.val = &valueReader{d, d.curr.Remaining()}
 	return h, d.val, nil
 }
 
@@ -248,15 +258,11 @@ func (d *Decoder) ReadHeader() (Header, *Value, error) {
 // can be retried.
 func (d *Decoder) PeekHeader() (Header, error) {
 	if d.val != nil {
-		if d.val.Len() == 0 {
-			// the previous primitive value has been read completely, invalidate d.val
-			d.val.n = -1
-			d.val = nil
-		} else if !d.curr.Constructed {
-			return Header{}, errors.New("value not fully read")
-		} else {
+		if d.curr.Constructed {
 			// we have begun discarding the current value. We cannot read a TLV here
-			return Header{}, errors.New("invalid state")
+			return Header{}, errors.New("tlv: invalid state")
+		} else {
+			return Header{}, errors.New("tlv: value not closed after reading")
 		}
 	}
 	d.peekAt = 0
@@ -418,41 +424,36 @@ func (d *Decoder) discard() (err error) {
 		return errors.New("cannot discard indefinite number of bytes")
 	}
 	if d.val == nil {
-		// interpret the current TLV as primitive to discard it
-		d.val = &Value{d, d.curr.Remaining()}
+		// pretend the current TLV uses primitive encoding to discard it
+		d.val = &valueReader{d, d.curr.Remaining()}
 
-		// we might have already peeked at the first header in the value
+		// we might have already peeked at the next header in the value
 		d.baseOffset += int64(d.peekOffset)
 		d.peekOffset = 0
 		d.peekLen = 0
 	}
-	if err = d.val.Close(); err != nil {
-		return noEOF(err)
-	}
-	// invalidate d.val
-	d.val.n = -1
-	d.val = nil
 
-	// We have successfully discarded the data value. The next byte is the start of
-	// the next sibling TLV to the discarded one.
-	return nil
+	// Close discards the rest of val and calls d.valueDone.
+	return noEOF(d.val.Close())
 }
 
-// valueDone gets called by the Value type when a data value has been fully read.
+// valueDone gets called by the valueReader type when a data value has been fully read.
 // d automatically updates its state accordingly.
 func (d *Decoder) valueDone() {
 	if d.val.Len() != 0 {
 		panic("BUG: value is not completely read")
 	}
+	d.val = nil
 	d.baseOffset += int64(d.curr.Remaining())
 	d.curr.Offset += d.curr.Remaining()
 
-	// We have read the entire data value. The next byte is the start of another TLV
+	// We have read or discarded the entire data value.
+	// The next byte is the start of another TLV.
 	d.state.pop()
 }
 
-// Skip reads the remainder of the current data value. If it uses the primitive
-// encoding, only that value is skipped. If it is constructed, everything until
+// Skip discards the remainder of the current data value. If it uses the primitive
+// encoding, only that value is discarded. If it is constructed, everything until
 // the matching end-of-contents is skipped.
 //
 // If at any point an error is encountered, the skipping will be stopped and the
@@ -462,7 +463,7 @@ func (d *Decoder) Skip() (err error) {
 		return d.discard()
 	}
 	depth := d.StackDepth()
-	var val *Value
+	var val io.Closer
 	for d.StackDepth() >= depth && err == nil {
 		_, val, err = d.ReadHeader()
 		if err == nil && val != nil {
@@ -470,6 +471,12 @@ func (d *Decoder) Skip() (err error) {
 		}
 	}
 	return err
+}
+
+// DataValueOffset returns the input byte offset where the current data value
+// starts. This is the first byte of the identifier octets of the current value.
+func (d *Decoder) DataValueOffset() int64 {
+	return d.curr.Start
 }
 
 // InputOffset returns the current input byte offset. The number of bytes

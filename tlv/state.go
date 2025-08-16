@@ -4,6 +4,10 @@ package tlv
 type stateEntry struct {
 	Header
 
+	// Start indicates the input offset where the TLV begins. This is used for error
+	// reporting.
+	Start int64
+
 	// Offset indicates how far into the value of the TLV the encoder/decoder has
 	// progressed, i.e. how many bytes have been written or read.
 	Offset int
@@ -52,12 +56,14 @@ func (s *state) root() bool {
 }
 
 // push puts h onto the stack, indicating that the value of h is now being
-// processed.
-func (s *state) push(h Header) {
+// processed. The second argument indicates the location of the TLV in the
+// input/output.
+func (s *state) push(h Header, at int64) {
 	prev := s.curr
 	s.stack = append(s.stack, s.curr)
 	s.curr = stateEntry{
 		Header: h,
+		Start:  at,
 		Length: MinLength(h.Length, prev.Remaining()),
 	}
 }
@@ -65,8 +71,8 @@ func (s *state) push(h Header) {
 // pop removes the topmost data value from the stack and updates the remaining
 // state. This indicates that processing of the value is completed.
 func (s *state) pop() {
-	prev := s.curr
+	offset := s.curr.Offset
 	s.curr = s.stack[len(s.stack)-1]
 	s.stack = s.stack[:len(s.stack)-1]
-	s.curr.Offset += prev.Offset
+	s.curr.Offset += offset
 }

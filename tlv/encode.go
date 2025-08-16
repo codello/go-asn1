@@ -26,62 +26,55 @@ type valueWriter struct {
 
 // Len returns the number of bytes in the unwritten portion of the value.
 func (w *valueWriter) Len() int {
-	if w.n < 0 {
-		panic("illegal use of value after WriteHeader()")
-	}
 	return max(w.n, 0)
-}
-
-// advance gets called when n bytes are written to the underlying writer.
-func (w *valueWriter) advance(n int) error {
-	w.n -= n
-	if w.n == 0 {
-		return w.e.valueDone()
-	}
-	return nil
 }
 
 // WriteByte implements [io.ByteReader].
 func (w *valueWriter) WriteByte(b byte) error {
+	if w.n < 0 {
+		return errClosed
+	}
 	if w.Len() == 0 {
 		return errTruncated
 	}
 	err := w.e.wr.WriteByte(b)
 	if err != nil {
-		return err
+		return &ioError{"write", err}
 	}
-	return w.advance(1)
+	w.n--
+	return nil
 }
 
 // Write implements [io.Writer].
 func (w *valueWriter) Write(p []byte) (n int, err error) {
+	if w.n < 0 {
+		return 0, errClosed
+	}
 	write := min(len(p), w.Len())
 	if write > 0 {
 		n, err = w.e.wr.Write(p[:write])
 	}
-	if err == nil && n < write {
-		err = io.ErrShortWrite
-	} else if err == nil && write < len(p) {
+	w.n -= n
+	if err != nil {
+		err = &ioError{"write", err}
+	} else if n < write {
+		err = &ioError{"write", io.ErrShortWrite}
+	} else if write < len(p) {
 		err = errTruncated
-	}
-	if fErr := w.advance(n); err == nil {
-		// w.wr.Write might return n == w.n and a non-nil error.
-		// In that case we still advance, but prefer the original write error.
-		err = fErr
 	}
 	return n, err
 }
 
-// ReadFrom implements [io.ReaderFrom]. This is an optimization for cases where
-// the underlying writer implements [io.ReaderFrom].
-func (w *valueWriter) ReadFrom(r io.Reader) (n int64, err error) {
-	n, err = io.Copy(w.e.wr, io.LimitReader(r, int64(w.n)))
-	if fErr := w.advance(int(n)); err == nil {
-		// io.Copy might return n == w.n and a non-nil error.
-		// In that case we still advance, but prefer the original write error.
-		err = fErr
+// Close finishes writing the data value and updates the state of the underlying
+// Encoder. If this is not a root element, Close will never return an error.
+func (w *valueWriter) Close() error {
+	if w.n < 0 {
+		return errClosed
+	} else if w.Len() > 0 {
+		return errors.New("tlv: value not fully written")
 	}
-	return n, err
+	w.n = -1
+	return w.e.valueDone()
 }
 
 //endregion
@@ -104,7 +97,7 @@ type Encoder struct {
 	buf bufferedWriter // internal buffering
 	val *valueWriter
 
-	offset int64 // number of bytes written
+	baseOffset int64 // number of bytes written
 
 	// Headers are first encoded into peekBuf and then written to the underlying
 	// writer. If the underlying writer does not successfully complete the write
@@ -121,6 +114,7 @@ type Encoder struct {
 
 	peekHeader Header
 	peekBuf    [12]byte
+	peekAt     int8
 	peekLen    int8
 }
 
@@ -153,7 +147,8 @@ func (e *Encoder) Reset(w io.Writer) {
 	}
 	e.val = nil
 
-	e.offset = 0
+	e.baseOffset = 0
+	e.peekLen = 0
 }
 
 // WriteHeader writes the next TLV header to the output. At the end of
@@ -162,31 +157,29 @@ func (e *Encoder) Reset(w io.Writer) {
 // sequence of headers and values is valid and will return an error if h cannot
 // be written at the current place in the TLV structure.
 //
-// When h indicates the use of the primitive encoding, WriteHeader returns an
-// [io.Writer] that can be used to write the contents of the value. The full
-// value (as indicated by h.Length) must be written before the next call to
-// WriteHeader. The returned writer also implements [io.ByteWriter].
+// If h indicates the use of the primitive encoding, WriteHeader returns an
+// [io.WriteCloser] that can be used to write the contents of the value. It also
+// implements [io.ByteWriter]. Before the next call to WriteHeader, the full
+// value (as indicated by h.Length) must be written and [io.Closer.Close] must
+// be called.
 //
 // WriteHeader can be used in presence of transient errors. If the underlying
 // writer returns an error during the write operation, WriteHeader will return
 // that error (potentially wrapped). If the underlying writer maintains a
 // consistent state after an error, you can retry the WriteHeader operation
 // (using the same value for h) to resume the previous write operation.
-func (e *Encoder) WriteHeader(h Header) (io.Writer, error) {
+func (e *Encoder) WriteHeader(h Header) (io.WriteCloser, error) {
 	if e.val != nil {
-		if e.val.Len() == 0 {
-			// the previous primitive value has been written completely, invalidate e.val
-			e.val.n = -1
-			e.val = nil
-		} else {
-			return nil, errors.New("value not fully written")
-		}
+		return nil, errors.New("tlv: value not closed")
 	}
 	err := e.writeHeader(h)
 	if err != nil {
 		if _, ok := err.(*ioError); !ok {
-			e.peekLen = 0 // we haven't written anything
-			err = &SyntaxError{ByteOffset: e.offset, Header: e.curr.Header, Err: err}
+			// We haven't actually written any data, which means h was invalid, or we got
+			// truncated. Reset peek buffer so that it can be filled on the next call
+			e.peekLen = 0
+			e.peekAt = 0
+			err = &SyntaxError{ByteOffset: e.baseOffset, Header: e.curr.Header, Err: err}
 		}
 		return nil, err
 	}
@@ -194,15 +187,21 @@ func (e *Encoder) WriteHeader(h Header) (io.Writer, error) {
 	if h.Tag == TagEndOfContents {
 		e.state.pop()
 	} else {
-		e.state.push(h)
+		e.state.push(h, e.baseOffset)
 	}
+	e.baseOffset += int64(e.peekAt)
+	// successfully written, invalidate peek
+	e.peekLen = 0
+	e.peekAt = 0
+
 	// when using buffering we prefer to write complete headers/values
 	e.buf.Flushable()
 
-	if !h.Constructed {
-		e.val = &valueWriter{e, e.curr.Remaining()}
+	if h.Constructed || h.Tag == TagEndOfContents {
+		return nil, nil
 	}
-	return e.val, err
+	e.val = &valueWriter{e, e.curr.Remaining()}
+	return e.val, nil
 }
 
 // writeHeader encodes a TLV header into e. If encoding fails or h is not a
@@ -225,7 +224,7 @@ func (e *Encoder) writeHeader(h Header) error {
 		if e.StackDepth() == 1 {
 			// We have ended a top level data value
 			if err := e.buf.Flush(); err != nil {
-				return err
+				return &ioError{"write", err}
 			}
 		}
 		return nil
@@ -246,7 +245,6 @@ func (e *Encoder) writeHeader(h Header) error {
 // matches e.peekHeader, that generated the data).
 func (e *Encoder) encodeHeader(h Header) (err error) {
 	defer func() {
-		e.peekHeader = h
 		if err == nil {
 			err = e.flush()
 		}
@@ -259,6 +257,7 @@ func (e *Encoder) encodeHeader(h Header) (err error) {
 		}
 		return nil
 	}
+	e.peekHeader = h
 
 	b := uint8(h.Tag.Class() >> 8)
 	if h.Constructed {
@@ -307,13 +306,11 @@ func (e *Encoder) writeByte(b byte) error {
 // If an error occurs, the remaining data is shifted to the front of e.peekBuf
 // and the error is returned.
 func (e *Encoder) flush() error {
-	if e.peekLen == 0 {
+	if e.peekAt == e.peekLen {
 		return nil // avoid empty writes
 	}
-	n, err := e.wr.Write(e.peekBuf[:e.peekLen])
-	copy(e.peekBuf[:int(e.peekLen)-n], e.peekBuf[n:e.peekLen])
-	e.peekLen -= int8(n)
-	e.offset += int64(n)
+	n, err := e.wr.Write(e.peekBuf[e.peekAt:e.peekLen])
+	e.peekAt += int8(n)
 	e.curr.Offset += n
 	if err != nil {
 		err = &ioError{"write", err}
@@ -327,17 +324,27 @@ func (e *Encoder) valueDone() error {
 	if e.val.Len() != 0 {
 		panic("BUG: value is not completely written")
 	}
-	e.curr.Offset += e.curr.Length
-	e.offset += int64(e.curr.Length)
-
-	// We have written the entire data value. Next another TLV must follow.
-	e.state.pop()
-
-	if e.state.root() {
-		// this is a root data value
-		return e.buf.Flush()
+	if e.StackDepth() == 1 {
+		// we have finished a root data value
+		if err := e.buf.Flush(); err != nil {
+			return &ioError{"write", err}
+		}
 	}
+	e.val = nil
+	e.curr.Offset += e.curr.Length
+	e.baseOffset += int64(e.curr.Length)
+
+	// We have written the entire data value.
+	// Next another TLV header must follow.
+	e.state.pop()
 	return nil
+}
+
+// DataValueOffset returns the output byte offset where the current data value
+// begins. This is the first byte of the identifier octets of the current data
+// value.
+func (e *Encoder) DataValueOffset() int64 {
+	return e.curr.Start
 }
 
 // OutputOffset returns the current output byte offset. It gives the location of
@@ -347,9 +354,9 @@ func (e *Encoder) valueDone() error {
 func (e *Encoder) OutputOffset() int64 {
 	if e.val != nil {
 		// this never happens if d.curr.Length is indefinite
-		return e.offset + int64(e.curr.Length-e.val.Len())
+		return e.baseOffset + int64(e.curr.Length-e.val.Len())
 	}
-	return e.offset
+	return e.baseOffset + int64(e.peekAt)
 }
 
 // StackDepth returns the depth of nested constructed TLVs that have been opened
