@@ -228,8 +228,7 @@ func (e *Encoder) writeHeader(h Header) error {
 
 	if !h.Constructed && h.Length == LengthIndefinite {
 		return errors.New("indefinite-length primitive data value")
-	} else if h.Length != LengthIndefinite && uint(h.Length) > uint(e.curr.Remaining()) {
-		// FIXME: We should check the encoded header size here as well, no? Not just h.Length
+	} else if h.Length != LengthIndefinite && uint(HeaderSize(h)+h.Length) > uint(e.curr.Remaining()) {
 		return errors.New("data value exceeds parent")
 	}
 

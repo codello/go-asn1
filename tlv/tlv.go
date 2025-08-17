@@ -35,9 +35,11 @@ package tlv
 
 import (
 	"math"
+	"math/bits"
 	"strconv"
 
 	"codello.dev/asn1"
+	"codello.dev/asn1/internal/vlq"
 )
 
 // TagEndOfContents is the tag that signifies the end of a constructed data
@@ -111,6 +113,21 @@ func (h Header) String() string {
 	}
 	s += ":" + strconv.Itoa(h.Length)
 	return s
+}
+
+// HeaderSize returns the minimum number of bytes required to encode h.
+func HeaderSize(h Header) int {
+	l := 1 // identifier octets
+	if h.Tag.Number() >= 31 {
+		// tag does not fit into one byte
+		l += vlq.Size(h.Tag.Number())
+	}
+	l++ // length octets
+	if h.Length == LengthIndefinite || h.Length < 128 {
+		return l
+	}
+	// multi-byte length
+	return l + (bits.Len(uint(h.Length))+7)/8
 }
 
 // requireKeyedLiterals can be embedded in a struct to require keyed literals.

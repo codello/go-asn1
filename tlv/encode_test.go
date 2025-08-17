@@ -57,6 +57,8 @@ func (e transientError) Error() string {
 }
 
 func TestWriteHeader(t *testing.T) {
+	anyError := errors.New("any error")
+
 	tests := map[string]struct {
 		input   []any
 		buffer  bool // use builtin buffering
@@ -70,7 +72,7 @@ func TestWriteHeader(t *testing.T) {
 		"IndefiniteLength": {[]any{Header{asn1.TagSequence, true, LengthIndefinite}, Header{asn1.TagOctetString, false, 1}, []byte{0x15}, EndOfContents}, true,
 			[]byte{0x30, 0x80, 0x04, 0x01, 0x15, 0x00, 0x00}, nil},
 		"Truncated": {[]any{Header{asn1.TagSequence, true, 1}, Header{asn1.TagInteger, false, 1}}, false,
-			[]byte{0x30, 0x01}, errTruncated},
+			[]byte{0x30, 0x01}, anyError},
 
 		"LargeTag": {[]any{Header{215, false, 0}}, false,
 			[]byte{0x1f, 0x81, 0x57, 0x00}, nil},
@@ -141,7 +143,8 @@ func TestWriteHeader(t *testing.T) {
 					continue
 				}
 			}
-			if !errors.Is(err, tc.wantErr) {
+			//goland:noinspection GoDirectComparisonOfErrors
+			if !errors.Is(err, tc.wantErr) && !(err != nil && tc.wantErr == anyError) {
 				t.Errorf("%s(): got %q, want %q", op, err, tc.wantErr)
 			}
 			if !bytes.Equal(got.Bytes(), tc.want) {

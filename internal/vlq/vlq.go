@@ -74,22 +74,16 @@ func read[T ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64](r io.ByteReader, minim
 	return ret, err
 }
 
-// Length returns the number of bytes needed to encode n as a VLQ.
-func Length[T ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64](n T) int {
-	if n == 0 {
-		return 1
-	}
-	l := 0
-	for i := n; i > 0; i >>= 7 {
-		l++
-	}
-	return l
+// Size returns the number of bytes needed to encode n as a VLQ.
+func Size[T ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64](n T) int {
+	// n|1 ensures that we don't return 0 without returning a too large number
+	return (bits.Len64(uint64(n|1)) + 6) / 7
 }
 
 // Write encodes i as a VLQ into w. Any error returned by w is returned by this
 // function.
 func Write[T ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64](w io.ByteWriter, i T) (n int, err error) {
-	l := Length(i)
+	l := Size(i)
 
 	j := l - 1
 	for ; j >= 0 && err == nil; j-- {

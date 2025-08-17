@@ -52,9 +52,9 @@ type writeTestcase[T ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64] struct {
 func testWrite[T ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64](t *testing.T, tc writeTestcase[T]) {
 	t.Helper()
 
-	l := Length(tc.value)
+	l := Size(tc.value)
 	if l != len(tc.want) {
-		t.Errorf("Length(%d) = %d, want %d", tc.value, l, len(tc.want))
+		t.Errorf("Size(%d) = %d, want %d", tc.value, l, len(tc.want))
 	}
 	var buf bytes.Buffer
 	buf.Grow(l)
@@ -142,3 +142,9 @@ func TestWrite8(t *testing.T) {
 }
 
 //endregion
+
+func BenchmarkLength(b *testing.B) {
+	for b.Loop() {
+		Size(uint8(200))
+	}
+}
