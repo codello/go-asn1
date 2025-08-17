@@ -35,6 +35,8 @@ func (e *stateEntry) Remaining() int {
 type state struct {
 	stack []stateEntry
 	curr  stateEntry // top entry of the stack
+
+	offset int64
 }
 
 // reset clears the state to a single (virtual) root data value. The allocated
@@ -48,6 +50,7 @@ func (s *state) reset() {
 		Header: Header{Length: LengthIndefinite, Constructed: true},
 		Length: LengthIndefinite,
 	}
+	s.offset = 0
 }
 
 // root indicates whether s is currently at the root level.
@@ -56,23 +59,27 @@ func (s *state) root() bool {
 }
 
 // push puts h onto the stack, indicating that the value of h is now being
-// processed. The second argument indicates the location of the TLV in the
-// input/output.
-func (s *state) push(h Header, at int64) {
-	prev := s.curr
+// processed. The size argument indicates the size of the identifier and length
+// octets in bytes.
+func (s *state) push(h Header, size int) {
+	s.curr.Offset += size
 	s.stack = append(s.stack, s.curr)
 	s.curr = stateEntry{
 		Header: h,
-		Start:  at,
-		Length: MinLength(h.Length, prev.Remaining()),
+		Start:  s.offset,
+		Length: MinLength(h.Length, s.curr.Remaining()),
 	}
+	s.offset += int64(size)
 }
 
 // pop removes the topmost data value from the stack and updates the remaining
-// state. This indicates that processing of the value is completed.
-func (s *state) pop() {
-	offset := s.curr.Offset
+// state. This indicates that processing of the value is completed. The given
+// size indicates a number of bytes processed from the content octets of the
+// current data value.
+func (s *state) pop(size int) {
+	offset := s.curr.Offset + size
 	s.curr = s.stack[len(s.stack)-1]
 	s.stack = s.stack[:len(s.stack)-1]
 	s.curr.Offset += offset
+	s.offset += int64(size)
 }

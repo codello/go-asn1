@@ -97,8 +97,6 @@ type Encoder struct {
 	buf bufferedWriter // internal buffering
 	val *valueWriter
 
-	baseOffset int64 // number of bytes written
-
 	// Headers are first encoded into peekBuf and then written to the underlying
 	// writer. If the underlying writer does not successfully complete the write
 	// operation, peekBuf[:peekLen] contains the bytes that were not written. A
@@ -147,7 +145,6 @@ func (e *Encoder) Reset(w io.Writer) {
 	}
 	e.val = nil
 
-	e.baseOffset = 0
 	e.peekLen = 0
 }
 
@@ -179,17 +176,16 @@ func (e *Encoder) WriteHeader(h Header) (io.WriteCloser, error) {
 			// truncated. Reset peek buffer so that it can be filled on the next call
 			e.peekLen = 0
 			e.peekAt = 0
-			err = &SyntaxError{ByteOffset: e.baseOffset, Header: e.curr.Header, Err: err}
+			err = &SyntaxError{ByteOffset: e.offset, Header: e.curr.Header, Err: err}
 		}
 		return nil, err
 	}
 
 	if h.Tag == TagEndOfContents {
-		e.state.pop()
+		e.state.pop(int(e.peekAt))
 	} else {
-		e.state.push(h, e.baseOffset)
+		e.state.push(h, int(e.peekAt))
 	}
-	e.baseOffset += int64(e.peekAt)
 	// successfully written, invalidate peek
 	e.peekLen = 0
 	e.peekAt = 0
@@ -233,6 +229,7 @@ func (e *Encoder) writeHeader(h Header) error {
 	if !h.Constructed && h.Length == LengthIndefinite {
 		return errors.New("indefinite-length primitive data value")
 	} else if h.Length != LengthIndefinite && uint(h.Length) > uint(e.curr.Remaining()) {
+		// FIXME: We should check the encoded header size here as well, no? Not just h.Length
 		return errors.New("data value exceeds parent")
 	}
 
@@ -293,8 +290,7 @@ func (e *Encoder) encodeHeader(h Header) (err error) {
 
 // writeByte writes byte b into the internal retry buffer e.peekBuf.
 func (e *Encoder) writeByte(b byte) error {
-	// uint conversion takes care of LengthIndefinite
-	if uint(e.peekLen+1) > uint(e.curr.Remaining()) {
+	if int(e.peekLen) == e.curr.Remaining() {
 		return errTruncated
 	}
 	e.peekBuf[e.peekLen] = b
@@ -311,7 +307,6 @@ func (e *Encoder) flush() error {
 	}
 	n, err := e.wr.Write(e.peekBuf[e.peekAt:e.peekLen])
 	e.peekAt += int8(n)
-	e.curr.Offset += n
 	if err != nil {
 		err = &ioError{"write", err}
 	}
@@ -331,12 +326,10 @@ func (e *Encoder) valueDone() error {
 		}
 	}
 	e.val = nil
-	e.curr.Offset += e.curr.Length
-	e.baseOffset += int64(e.curr.Length)
 
 	// We have written the entire data value.
 	// Next another TLV header must follow.
-	e.state.pop()
+	e.state.pop(e.curr.Remaining())
 	return nil
 }
 
@@ -354,9 +347,9 @@ func (e *Encoder) DataValueOffset() int64 {
 func (e *Encoder) OutputOffset() int64 {
 	if e.val != nil {
 		// this never happens if d.curr.Length is indefinite
-		return e.baseOffset + int64(e.curr.Length-e.val.Len())
+		return e.offset + int64(e.curr.Length-e.val.Len())
 	}
-	return e.baseOffset + int64(e.peekAt)
+	return e.offset + int64(e.peekAt)
 }
 
 // StackDepth returns the depth of nested constructed TLVs that have been opened

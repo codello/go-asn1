@@ -143,9 +143,6 @@ type Decoder struct {
 	buf bufferedReader // internal buffering
 	val *valueReader
 
-	baseOffset int64 // beginning of next TLV or value
-	peekOffset int   // relative to baseOffset
-
 	// peekBuf stores the bytes read during the last ReadHeader operation so we can
 	// recover from transient I/O errors. The maximum number of bytes for a valid
 	// header is:
@@ -156,14 +153,15 @@ type Decoder struct {
 	// We add 2 extra bytes for "integer too large" bytes and for padding.
 	//
 	// peekAt indicates the next read/write position in peekBuf and peekLen the
-	// number of valid bytes in peekBuf. peekOffset is the number of bytes read
+	// number of valid bytes in peekBuf. peekBytes is the number of bytes read
 	// during the last ReadHeader call. This is equal to peekLen unless the length
 	// bytes have leading zeros, in which case the leading zeros will not be added
 	// to peekBuf or peekLen.
 
-	peekBuf [14]byte
-	peekAt  int8
-	peekLen int8
+	peekBuf   [14]byte
+	peekAt    int8
+	peekLen   int8
+	peekBytes int // relative to state.offset
 }
 
 // NewDecoder creates a new Decoder reading from r. If r does not implement
@@ -197,8 +195,7 @@ func (d *Decoder) Reset(r io.Reader) {
 	}
 	d.val = nil
 
-	d.baseOffset = 0
-	d.peekOffset = 0
+	d.peekBytes = 0
 	d.peekAt = 0
 	d.peekLen = 0
 }
@@ -227,13 +224,12 @@ func (d *Decoder) ReadHeader() (Header, io.ReadCloser, error) {
 	// successful parse, consume the header
 
 	if h.Tag == TagEndOfContents {
-		d.state.pop()
+		d.state.pop(d.peekBytes)
 	} else {
-		d.state.push(h, d.baseOffset)
+		d.state.push(h, d.peekBytes)
 	}
-	d.baseOffset += int64(d.peekOffset)
 	d.peekLen = 0
-	d.peekOffset = 0
+	d.peekBytes = 0
 
 	// adjust buffering
 	switch d.StackDepth() {
@@ -271,10 +267,10 @@ func (d *Decoder) PeekHeader() (Header, error) {
 		if _, ok := err.(*ioError); err == io.EOF || ok {
 			return h, err
 		}
-		sErr := &SyntaxError{ByteOffset: d.baseOffset, Header: d.curr.Header, Err: err}
+		sErr := &SyntaxError{ByteOffset: d.offset, Header: d.curr.Header, Err: err}
 		//goland:noinspection GoDirectComparisonOfErrors
 		if err == io.ErrUnexpectedEOF {
-			sErr.ByteOffset += int64(d.peekOffset)
+			sErr.ByteOffset += int64(d.peekBytes)
 		}
 		return h, sErr
 	}
@@ -306,7 +302,7 @@ func (d *Decoder) readHeader() (Header, error) {
 		err = errInvalidEOC
 	} else if !h.Constructed && h.Length == LengthIndefinite {
 		err = errors.New("indefinite-length primitive data value")
-	} else if h.Length != LengthIndefinite && uint(h.Length) > uint(d.curr.Remaining()) {
+	} else if h.Length != LengthIndefinite && uint(d.peekBytes+h.Length) > uint(d.curr.Remaining()) {
 		// uint conversion takes care of indefinite length
 		err = errors.New("data value exceeds parent")
 	}
@@ -382,7 +378,7 @@ func (d *Decoder) decodeHeader() (h Header, err error) {
 // Reads from the underlying reader are stored in d.peekBuf to enable the retry
 // mechanism for transient errors.
 func (d *Decoder) readByte() (b byte, err error) {
-	if d.curr.Remaining() == 0 {
+	if d.curr.Remaining() == d.peekBytes {
 		return 0, errTruncated
 	}
 
@@ -391,8 +387,7 @@ func (d *Decoder) readByte() (b byte, err error) {
 	} else if b, err = d.br.ReadByte(); err == nil {
 		d.peekBuf[d.peekAt] = b
 		d.peekLen++
-		d.peekOffset++
-		d.curr.Offset++
+		d.peekBytes++
 	} else if err != io.EOF {
 		return 0, &ioError{"read", err}
 	} else {
@@ -425,12 +420,7 @@ func (d *Decoder) discard() (err error) {
 	}
 	if d.val == nil {
 		// pretend the current TLV uses primitive encoding to discard it
-		d.val = &valueReader{d, d.curr.Remaining()}
-
-		// we might have already peeked at the next header in the value
-		d.baseOffset += int64(d.peekOffset)
-		d.peekOffset = 0
-		d.peekLen = 0
+		d.val = &valueReader{d, d.curr.Remaining() - d.peekBytes}
 	}
 
 	// Close discards the rest of val and calls d.valueDone.
@@ -444,12 +434,14 @@ func (d *Decoder) valueDone() {
 		panic("BUG: value is not completely read")
 	}
 	d.val = nil
-	d.baseOffset += int64(d.curr.Remaining())
-	d.curr.Offset += d.curr.Remaining()
 
 	// We have read or discarded the entire data value.
 	// The next byte is the start of another TLV.
-	d.state.pop()
+	//
+	// d.peekBytes might be non-zero when discarding a constructed value
+	d.state.pop(d.curr.Remaining() + d.peekBytes)
+	d.peekBytes = 0
+	d.peekLen = 0
 }
 
 // Skip discards the remainder of the current data value. If it uses the primitive
@@ -491,9 +483,10 @@ func (d *Decoder) DataValueOffset() int64 {
 func (d *Decoder) InputOffset() int64 {
 	if d.val != nil {
 		// this never happens if d.curr.Length is indefinite
-		return d.baseOffset + int64(d.curr.Length-d.val.Len())
+		// d.peekBytes can be non-zero when discarding a constructed element
+		return d.offset + int64(d.curr.Length-d.val.Len()) + int64(d.peekBytes)
 	}
-	return d.baseOffset
+	return d.offset
 }
 
 // StackDepth returns the number of nested constructed TLVs of the current
