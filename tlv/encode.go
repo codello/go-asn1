@@ -3,8 +3,10 @@ package tlv
 import (
 	"errors"
 	"io"
+	"iter"
 	"math/bits"
 
+	"codello.dev/asn1"
 	"codello.dev/asn1/internal/vlq"
 )
 
@@ -114,6 +116,14 @@ type Encoder struct {
 	peekBuf    [12]byte
 	peekAt     int8
 	peekLen    int8
+
+	// yield is a special function that, if set, pauses the execution of the current
+	// method until it is explicitly resumed. The technical implementation of this
+	// is realized via [iter.Pull].
+	//
+	// yield is used by [Sequence] to pause the encoding of values after the first
+	// WriteHeader call in order to calculate the total length of a value.
+	yield func(Header, error) bool
 }
 
 // NewEncoder creates a new [Encoder] writing to w. If w does not implement
@@ -166,6 +176,9 @@ func (e *Encoder) Reset(w io.Writer) {
 // consistent state after an error, you can retry the WriteHeader operation
 // (using the same value for h) to resume the previous write operation.
 func (e *Encoder) WriteHeader(h Header) (io.WriteCloser, error) {
+	if e.yield != nil {
+		e.yield(h, nil)
+	}
 	if e.val != nil {
 		return nil, errors.New("tlv: value not closed")
 	}
@@ -370,6 +383,80 @@ func (e *Encoder) StackIndex(i int) Header {
 		return e.curr.Header
 	}
 	return e.stack[i].Header
+}
+
+//endregion
+
+//region Sequence
+
+// Sequence can be used to build constructed TLVs for writing. Despite it name
+// it can be used to build any constructed value, not just SEQUENCE values. The
+// zero value is an empty constructed value. Note that Tag must be set before
+// the value is written.
+type Sequence struct {
+	Tag  asn1.Tag
+	vals []func(*Encoder) error
+}
+
+// Append adds the given values to the end of the sequence. A value is a
+// function that encodes a single value into an [Encoder]. This function does
+// not call any of the value functions.
+func (s *Sequence) Append(val ...func(*Encoder) error) {
+	s.vals = append(s.vals, val...)
+}
+
+// WriteTo encodes the values of s into enc. Writing is a three-step process:
+//
+//  1. All values are encoded until they call [Encoder.WriteHeader] for the first
+//     time, at which point encoding pauses.
+//  2. The total length of all the values is calculated and an appropriate header
+//     for the sequence is written.
+//  3. The encoding of the individual values is resumed and each value is written
+//     to enc.
+func (s *Sequence) WriteTo(enc *Encoder) error {
+	h := Header{Tag: s.Tag, Constructed: true}
+	nexts := make([]func() (Header, error, bool), 0, len(s.vals))
+	stops := make([]func(), 0, len(s.vals))
+	defer func() {
+		for _, stop := range stops {
+			stop()
+		}
+	}()
+	for _, value := range s.vals {
+		// We use the iter package to gain access to coroutines. In particular,
+		// iter.Pull2 allows us to pause the execution of value when it calls
+		// Encoder.WriteHeader and later resume its execution.
+		next, stop := iter.Pull2(func(yield func(Header, error) bool) {
+			enc.yield = yield
+			err := value(enc)
+			for yield(Header{}, err) {
+				// If value does not call WriteHeader at all and does not generate an error, we
+				// might need to call yield 2 times.
+			}
+		})
+		nexts = append(nexts, next)
+		stops = append(stops, stop)
+
+		yield := enc.yield
+		ch, err, _ := next()
+		enc.yield = yield
+		if err != nil {
+			return err
+		}
+		h.Length = CombinedLength(h.Length, HeaderSize(h), ch.Length)
+	}
+
+	if _, err := enc.WriteHeader(h); err != nil {
+		return err
+	}
+	for _, next := range nexts {
+		_, err, _ := next()
+		if err != nil {
+			return err
+		}
+	}
+	_, err := enc.WriteHeader(Header{})
+	return err
 }
 
 //endregion

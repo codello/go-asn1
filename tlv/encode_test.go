@@ -56,7 +56,7 @@ func (e transientError) Error() string {
 	return "transient error"
 }
 
-func TestWriteHeader(t *testing.T) {
+func TestEncoder_WriteHeader(t *testing.T) {
 	anyError := errors.New("any error")
 
 	tests := map[string]struct {
@@ -73,6 +73,8 @@ func TestWriteHeader(t *testing.T) {
 			[]byte{0x30, 0x80, 0x04, 0x01, 0x15, 0x00, 0x00}, nil},
 		"Truncated": {[]any{Header{asn1.TagSequence, true, 1}, Header{asn1.TagInteger, false, 1}}, false,
 			[]byte{0x30, 0x01}, anyError},
+		"ElementInEmptyConstructed": {[]any{Header{asn1.TagSequence, true, 0}, Header{asn1.TagInteger, false, 1}, []byte{0x15}, EndOfContents}, false,
+			[]byte{0x30, 0x00}, anyError},
 
 		"LargeTag": {[]any{Header{215, false, 0}}, false,
 			[]byte{0x1f, 0x81, 0x57, 0x00}, nil},
@@ -155,4 +157,97 @@ func TestWriteHeader(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSequence(t *testing.T) {
+	encodeInt := func(enc *Encoder) error {
+		val, err := enc.WriteHeader(Header{asn1.TagInteger, false, 1})
+		if err != nil {
+			return err
+		}
+		if err = val.(io.ByteWriter).WriteByte(0x15); err != nil {
+			return err
+		}
+		return val.Close()
+	}
+
+	encodeEmptySequence := func(enc *Encoder) error {
+		_, err := enc.WriteHeader(Header{asn1.TagSequence, true, LengthIndefinite})
+		if err != nil {
+			return err
+		}
+		_, err = enc.WriteHeader(Header{})
+		return err
+	}
+
+	t.Run("SingleLevelDefinite", func(t *testing.T) {
+		var got bytes.Buffer
+		want := []byte{0x30, 0x06, 0x02, 0x01, 0x15, 0x02, 0x01, 0x15}
+		enc := NewEncoder(&got)
+		seq := Sequence{Tag: asn1.TagSequence}
+		seq.Append(encodeInt, encodeInt)
+		if err := seq.WriteTo(enc); err != nil {
+			t.Fatalf("Sequence.WriteTo() returned an unexpected error: %q", err)
+		}
+		if !bytes.Equal(got.Bytes(), want) {
+			t.Errorf("Sequence: got %# x, want %# x", got.Bytes(), want)
+		}
+	})
+
+	t.Run("SingleLevelIndefinite", func(t *testing.T) {
+		var got bytes.Buffer
+		want := []byte{0x30, 0x80, 0x30, 0x80, 0x00, 0x00, 0x02, 0x01, 0x15, 0x00, 0x00}
+		enc := NewEncoder(&got)
+		seq := Sequence{Tag: asn1.TagSequence}
+		seq.Append(encodeEmptySequence, encodeInt)
+		if err := seq.WriteTo(enc); err != nil {
+			t.Fatalf("Sequence.WriteTo() returned an unexpected error: %q", err)
+		}
+		if !bytes.Equal(got.Bytes(), want) {
+			t.Errorf("Sequence.WriteTo(): got %# x, want %# x", got.Bytes(), want)
+		}
+	})
+
+	t.Run("NestedDefinite", func(t *testing.T) {
+		var got bytes.Buffer
+		want := []byte{0x30, 0x08, 0x30, 0x03, 0x02, 0x01, 0x15, 0x02, 0x01, 0x15}
+		enc := NewEncoder(&got)
+		seq := Sequence{Tag: asn1.TagSequence}
+		seq.Append(func(enc *Encoder) error {
+			seq := Sequence{Tag: asn1.TagSequence}
+			seq.Append(encodeInt)
+			return seq.WriteTo(enc)
+		})
+		seq.Append(encodeInt)
+		if err := seq.WriteTo(enc); err != nil {
+			fmt.Printf("%# x\n", got.Bytes())
+			t.Fatalf("Sequence.WriteTo() returned an unexpected error: %q", err)
+		}
+		if !bytes.Equal(got.Bytes(), want) {
+			t.Errorf("Sequence.WriteTo(): got %# x, want %# x", got.Bytes(), want)
+		}
+	})
+}
+
+func ExampleSequence() {
+	var out bytes.Buffer
+	enc := NewEncoder(&out)
+	seq := Sequence{Tag: asn1.TagSequence}
+	// append a value to the sequence
+	seq.Append(func(enc *Encoder) error {
+		val, err := enc.WriteHeader(Header{asn1.TagInteger, false, 1})
+		if err != nil {
+			return err
+		}
+		err = val.(io.ByteWriter).WriteByte(0x15)
+		if err != nil {
+			return err
+		}
+		return val.Close()
+	})
+	if err := seq.WriteTo(enc); err != nil {
+		panic(err)
+	}
+	fmt.Printf("%# x\n", out.Bytes())
+	// Output: 0x30 0x03 0x02 0x01 0x15
 }
