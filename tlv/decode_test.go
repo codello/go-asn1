@@ -90,6 +90,9 @@ func TestDecoder_ReadHeader(t *testing.T) {
 		"IndefiniteInDefiniteNoEnd": {[]any{0x30, 0x05, 0x30, 0x80, 0x02, 0x01, 0x15},
 			[]any{Header{asn1.TagSequence, true, 5}, Header{asn1.TagSequence, true, LengthIndefinite}, Header{asn1.TagInteger, false, 1}, []byte{0x15}, noError, &SyntaxError{}},
 			7},
+		"Complex": {[]any{0x31, 14, 0x02, 0x01, 0x04, 0x01, 0x01, 0xFF, 0x16, 0x06, 77, 65, 71, 71, 73, 69},
+			[]any{Header{asn1.TagSet, true, 14}, Header{asn1.TagInteger, false, 1}, []byte{0x04}, Header{asn1.TagBoolean, false, 1}, []byte{0xFF}, Header{asn1.TagIA5String, false, 6}, []byte("MAGGIE"), EndOfContents, io.EOF},
+			16},
 
 		// Unexpected/Invalid End-of-Contents
 		"UnexpectedEOC": {[]any{0x30, 0x03, 0x00, 0x00, 0x00},

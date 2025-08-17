@@ -23,14 +23,19 @@ type valueReader struct {
 	n int // remaining number of bytes
 }
 
+// isValid indicates whether v is able to read more bytes.
+func (v *valueReader) isValid() bool {
+	return v.d != nil
+}
+
 // Len returns the number of bytes in the unread portion of the value.
 func (v *valueReader) Len() int {
-	return max(v.n, 0)
+	return v.n
 }
 
 // Read implements [io.Reader].
 func (v *valueReader) Read(p []byte) (int, error) {
-	if v.n < 0 {
+	if v.d == nil {
 		return 0, errClosed
 	}
 	if v.Len() == 0 {
@@ -54,7 +59,7 @@ func (v *valueReader) Read(p []byte) (int, error) {
 
 // ReadByte implements [io.ByteReader].
 func (v *valueReader) ReadByte() (b byte, err error) {
-	if v.n < 0 {
+	if v.d == nil {
 		return 0, errClosed
 	}
 	if v.Len() == 0 {
@@ -81,7 +86,7 @@ func (v *valueReader) Discard(n int) (discarded int, err error) {
 	if n < 0 {
 		return 0, errors.New("tlv: negative count")
 	}
-	if v.n < 0 {
+	if v.d == nil {
 		return 0, errClosed
 	}
 
@@ -113,13 +118,13 @@ func (v *valueReader) Discard(n int) (discarded int, err error) {
 // Close discards any remaining bytes in the unread portion of v. If v has been
 // read to EOF calling Close will never return an error.
 func (v *valueReader) Close() error {
-	if v.n < 0 {
+	if v.d == nil {
 		return errClosed
 	} else if _, err := v.Discard(v.Len()); err != nil {
 		return err
 	}
-	v.n = -1
 	v.d.valueDone()
+	v.d = nil
 	return nil
 }
 
@@ -141,7 +146,7 @@ type Decoder struct {
 		io.ByteReader
 	}
 	buf bufferedReader // internal buffering
-	val *valueReader
+	val valueReader    // reused, saves allocations
 
 	// peekBuf stores the bytes read during the last ReadHeader operation so we can
 	// recover from transient I/O errors. The maximum number of bytes for a valid
@@ -193,7 +198,7 @@ func (d *Decoder) Reset(r io.Reader) {
 		d.buf.Reset(r)
 		d.br = &d.buf
 	}
-	d.val = nil
+	d.val.d = nil
 
 	d.peekBytes = 0
 	d.peekAt = 0
@@ -241,8 +246,8 @@ func (d *Decoder) ReadHeader() (Header, io.ReadCloser, error) {
 	if d.curr.Constructed || h.Tag == TagEndOfContents {
 		return h, nil, nil
 	}
-	d.val = &valueReader{d, d.curr.Remaining()}
-	return h, d.val, nil
+	d.val = valueReader{d, d.curr.Remaining()}
+	return h, &d.val, nil
 }
 
 // PeekHeader reads the next TLV header from the input without advancing d. You
@@ -253,7 +258,7 @@ func (d *Decoder) ReadHeader() (Header, io.ReadCloser, error) {
 // definite-length data values) and transient errors from the underlying reader
 // can be retried.
 func (d *Decoder) PeekHeader() (Header, error) {
-	if d.val != nil {
+	if d.val.isValid() {
 		if d.curr.Constructed {
 			// we have begun discarding the current value. We cannot read a TLV here
 			return Header{}, errors.New("tlv: invalid state")
@@ -418,9 +423,9 @@ func (d *Decoder) discard() (err error) {
 	if d.curr.Length == LengthIndefinite {
 		return errors.New("cannot discard indefinite number of bytes")
 	}
-	if d.val == nil {
+	if !d.val.isValid() {
 		// pretend the current TLV uses primitive encoding to discard it
-		d.val = &valueReader{d, d.curr.Remaining() - d.peekBytes}
+		d.val = valueReader{d, d.curr.Remaining() - d.peekBytes}
 	}
 
 	// Close discards the rest of val and calls d.valueDone.
@@ -433,7 +438,7 @@ func (d *Decoder) valueDone() {
 	if d.val.Len() != 0 {
 		panic("BUG: value is not completely read")
 	}
-	d.val = nil
+	d.val.d = nil
 
 	// We have read or discarded the entire data value.
 	// The next byte is the start of another TLV.
@@ -455,7 +460,7 @@ func (d *Decoder) Skip() (err error) {
 		return d.discard()
 	}
 	depth := d.StackDepth()
-	var val io.Closer
+	var val io.ReadCloser
 	for d.StackDepth() >= depth && err == nil {
 		_, val, err = d.ReadHeader()
 		if err == nil && val != nil {
@@ -481,7 +486,7 @@ func (d *Decoder) DataValueOffset() int64 {
 //   - If the current TLV uses the constructed encoding, it gives the location of
 //     the first byte of the next TLV header in the input.
 func (d *Decoder) InputOffset() int64 {
-	if d.val != nil {
+	if d.val.isValid() {
 		// this never happens if d.curr.Length is indefinite
 		// d.peekBytes can be non-zero when discarding a constructed element
 		return d.offset + int64(d.curr.Length-d.val.Len()) + int64(d.peekBytes)

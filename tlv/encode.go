@@ -26,14 +26,19 @@ type valueWriter struct {
 	n int // remaining number of bytes
 }
 
+// isValid reports whether bytes can be written to w.
+func (w *valueWriter) isValid() bool {
+	return w.e != nil
+}
+
 // Len returns the number of bytes in the unwritten portion of the value.
 func (w *valueWriter) Len() int {
-	return max(w.n, 0)
+	return w.n
 }
 
 // WriteByte implements [io.ByteReader].
 func (w *valueWriter) WriteByte(b byte) error {
-	if w.n < 0 {
+	if w.e == nil {
 		return errClosed
 	}
 	if w.Len() == 0 {
@@ -49,7 +54,7 @@ func (w *valueWriter) WriteByte(b byte) error {
 
 // Write implements [io.Writer].
 func (w *valueWriter) Write(p []byte) (n int, err error) {
-	if w.n < 0 {
+	if w.e == nil {
 		return 0, errClosed
 	}
 	write := min(len(p), w.Len())
@@ -70,13 +75,14 @@ func (w *valueWriter) Write(p []byte) (n int, err error) {
 // Close finishes writing the data value and updates the state of the underlying
 // Encoder. If this is not a root element, Close will never return an error.
 func (w *valueWriter) Close() error {
-	if w.n < 0 {
+	if w.e == nil {
 		return errClosed
 	} else if w.Len() > 0 {
 		return errors.New("tlv: value not fully written")
 	}
-	w.n = -1
-	return w.e.valueDone()
+	err := w.e.valueDone()
+	w.e = nil
+	return err
 }
 
 //endregion
@@ -97,7 +103,7 @@ type Encoder struct {
 		io.ByteWriter
 	}
 	buf bufferedWriter // internal buffering
-	val *valueWriter
+	val valueWriter
 
 	// Headers are first encoded into peekBuf and then written to the underlying
 	// writer. If the underlying writer does not successfully complete the write
@@ -153,7 +159,7 @@ func (e *Encoder) Reset(w io.Writer) {
 		e.buf.Reset(w)
 		e.wr = &e.buf
 	}
-	e.val = nil
+	e.val.e = nil
 
 	e.peekLen = 0
 }
@@ -179,7 +185,7 @@ func (e *Encoder) WriteHeader(h Header) (io.WriteCloser, error) {
 	if e.yield != nil {
 		e.yield(h, nil)
 	}
-	if e.val != nil {
+	if e.val.isValid() {
 		return nil, errors.New("tlv: value not closed")
 	}
 	err := e.writeHeader(h)
@@ -209,8 +215,8 @@ func (e *Encoder) WriteHeader(h Header) (io.WriteCloser, error) {
 	if h.Constructed || h.Tag == TagEndOfContents {
 		return nil, nil
 	}
-	e.val = &valueWriter{e, e.curr.Remaining()}
-	return e.val, nil
+	e.val = valueWriter{e, e.curr.Remaining()}
+	return &e.val, nil
 }
 
 // writeHeader encodes a TLV header into e. If encoding fails or h is not a
@@ -337,7 +343,7 @@ func (e *Encoder) valueDone() error {
 			return &ioError{"write", err}
 		}
 	}
-	e.val = nil
+	e.val.e = nil
 
 	// We have written the entire data value.
 	// Next another TLV header must follow.
@@ -357,7 +363,7 @@ func (e *Encoder) DataValueOffset() int64 {
 // The number of bytes actually written to the underlying [io.Writer] may be
 // less than this offset due to internal buffering effects.
 func (e *Encoder) OutputOffset() int64 {
-	if e.val != nil {
+	if e.val.isValid() {
 		// this never happens if d.curr.Length is indefinite
 		return e.offset + int64(e.curr.Length-e.val.Len())
 	}
